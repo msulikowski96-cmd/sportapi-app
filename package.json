@@ -1,0 +1,8 @@
+{
+  "name": "sportapi-app",
+  "version": "1.0.0",
+  "description": "Aplikacja webowa na SportAPI7 (RapidAPI) - mecze i szczegóły wydarzeń",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

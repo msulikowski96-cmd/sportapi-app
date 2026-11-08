@@ -41,6 +41,17 @@
   .lu { display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:13px; } .lu div div { padding:2px 0; }
   .lu .no { color:var(--mut); display:inline-block; width:24px; }
   .back { margin-bottom:12px; }
+  .row2 { display:flex; gap:8px; } .row2 select { flex:1; min-width:0; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px; font-size:15px; }
+  .btn:disabled { opacity:.5; }
+  .chips { display:flex; gap:6px; margin:8px 0; } .chip { width:30px; height:30px; border-radius:8px; display:grid; place-items:center; font-weight:700; font-size:13px; color:#fff; }
+  .chip.Z { background:#16a34a; } .chip.R { background:#6b7280; } .chip.P { background:#dc2626; }
+  .nm { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:10px 0; font-size:14px; }
+  ul.ai { margin:4px 0 0; padding-left:18px; font-size:14px; line-height:1.45; } ul.ai li { margin:3px 0; }
+  .prob { display:flex; height:26px; border-radius:7px; overflow:hidden; margin:8px 0 4px; font-size:12px; font-weight:700; }
+  .prob div { display:grid; place-items:center; color:#fff; min-width:0; } .prob .h { background:#2563eb; } .prob .d { background:#6b7280; } .prob .a { background:#e11d48; }
+  .probl { display:flex; justify-content:space-between; font-size:12px; color:var(--mut); }
+  .disc { color:var(--mut); font-size:12px; margin-top:14px; }
+  canvas.pitch { width:100%; height:auto; border-radius:8px; margin-top:10px; display:block; }
 </style>
 </head>
 <body>
@@ -50,6 +61,7 @@
     <button data-v="live" class="on">🔴 Na żywo</button>
     <button data-v="round">Kolejki</button>
     <button data-v="table">Tabela</button>
+    <button data-v="ai">🤖 Analiza AI</button>
   </nav>
 </header>
 <main id="app"></main>
@@ -91,8 +103,10 @@ async function showLive(silent) {
   try {
     const ev = (await api("/api/live")).events;
     app.innerHTML = ev.length
-      ? `<div class="day">Trwające mecze · odświeżanie co 30 s</div>` + ev.map(matchRow).join("")
+      ? `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("")
       : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`;
+    app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">dane z pamięci podręcznej do 90 s (oszczędzanie limitu API)</span></p>`);
+    $("#rf").onclick = () => showLive();
     bindRows();
   } catch (e) { if (!silent) fail(e); }
 }
@@ -175,11 +189,97 @@ async function openMatch(id) {
   } catch (err) { fail(err); }
 }
 
+// ---------- Analiza AI (NVIDIA Nemotron) ----------
+let anTeam = null;
+async function showAnalysis() {
+  loading();
+  try {
+    const rows = (await api("/api/table")).standings[0].rows;
+    app.innerHTML = `<div class="panel"><div class="row2"><select id="tm">${rows.map((r) =>
+      `<option value="${r.team.id}" ${String(r.team.id) === String(anTeam) ? "selected" : ""}>${r.position}. ${esc(r.team.name)}</option>`).join("")}</select>
+      <button class="btn" id="an">Analizuj</button></div>
+      <p class="mut" style="font-size:12px;margin:8px 0 0">Forma, mocne i słabe strony oraz typ następnego meczu – model NVIDIA Nemotron 3 Ultra na podstawie danych z API.</p></div><div id="res"></div>`;
+    $("#an").onclick = () => runAnalysis($("#tm").value);
+  } catch (e) { fail(e); }
+}
+async function runAnalysis(id) {
+  anTeam = id; const box = $("#res"), b = $("#an");
+  box.innerHTML = `<p class="mut">Nemotron analizuje dane… (może potrwać do ok. 30 s)</p>`; b.disabled = true;
+  try { const d = await api(`/api/analysis/${id}`); box.innerHTML = renderAnalysis(d); wireHeat(d); }
+  catch (e) { box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  finally { if ($("#an")) $("#an").disabled = false; }
+}
+const li = (a) => `<ul class="ai">${(a || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+function renderAnalysis(d) {
+  const t = d.table, a = d.ai, n = d.next;
+  let h = `<div class="panel"><div style="font-size:18px;font-weight:700">${esc(d.team.name)}</div>
+    <div class="mut" style="font-size:13px">${t.miejsce}. miejsce · ${t.punkty} pkt · ${t.mecze} mecze · bilans ${t.zwyciestwa}-${t.remisy}-${t.porazki} · bramki ${esc(t.bramki)}</div>
+    <h3>Forma (od najstarszego)</h3><div class="chips">${[...d.form].reverse().map((m) =>
+      `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div>
+    <div class="mut" style="font-size:12px">${[...d.form].reverse().map((m) => `${m.home ? "d" : "w"} ${esc(m.opponent)} ${m.gf}:${m.ga}`).join(" · ")}</div>`;
+  if (n) h += `<div class="nm">Następny mecz: <b>${n.home ? esc(d.team.name) : esc(n.opponent)} – ${n.home ? esc(n.opponent) : esc(d.team.name)}</b><br>
+    <span class="mut">kolejka ${n.round ?? "?"} · ${esc(fmtDay(n.date))} ${fmtTime(n.date)}</span></div>`;
+  if (!a) return h + `<h3>Odpowiedź modelu</h3><p style="white-space:pre-wrap;font-size:14px">${esc(d.raw || "Brak odpowiedzi")}</p></div>`;
+  h += `<h3>Forma</h3><p style="font-size:14px;line-height:1.45;margin:4px 0">${esc(a.podsumowanie_formy)}</p>
+    <h3>Mocne strony</h3>${li(a.mocne_strony)}<h3>Słabe strony</h3>${li(a.slabe_strony)}<h3>Kluczowe czynniki</h3>${li(a.kluczowe_czynniki)}`;
+  const p = a.prognoza;
+  if (p && n) {
+    const hn = n.home ? d.team.name : n.opponent, an = n.home ? n.opponent : d.team.name;
+    const w = [p.wygrana_gospodarzy, p.remis, p.wygrana_gosci].map((x) => Math.max(0, Number(x) || 0));
+    h += `<h3>Prognoza</h3><div style="font-size:14px">Typowany wynik: <b>${esc(p.typowany_wynik)}</b> · pewność: ${esc(p.pewnosc)}</div>
+      <div class="prob"><div class="h" style="width:${w[0]}%">${w[0]}%</div><div class="d" style="width:${w[1]}%">${w[1]}%</div><div class="a" style="width:${w[2]}%">${w[2]}%</div></div>
+      <div class="probl"><span>${esc(hn)}</span><span>remis</span><span>${esc(an)}</span></div>
+      <p style="font-size:14px;line-height:1.45">${esc(p.uzasadnienie)}</p>`;
+  }
+  h += `<div id="hm"></div><div class="disc">Analiza wygenerowana przez model AI (${esc(d.model.split("/")[1])}) wyłącznie na podstawie wyników i statystyk z API. To opinia, nie gwarancja wyniku.</div></div>`;
+  return h;
+}
+
+// ---------- Heatmapa zawodnika (ostatni mecz) ----------
+function wireHeat(d) {
+  const box = $("#hm"); if (!box || !d.lastMatch) return;
+  box.innerHTML = `<h3>Heatmapa zawodnika – ostatni mecz</h3><button class="btn" id="hl">Wybierz zawodnika</button><div id="hb"></div>`;
+  $("#hl").onclick = async () => {
+    $("#hl").disabled = true;
+    try {
+      const lu = await api(`/api/event/${d.lastMatch.id}/lineups`);
+      const side = d.lastMatch.homeTeamId === d.team.id ? lu.home : lu.away;
+      const pl = (side?.players || []).filter((p) => !p.substitute);
+      $("#hb").innerHTML = `<div class="row2" style="margin-top:10px"><select id="hp">${pl.map((p) =>
+        `<option value="${p.player.id}">${p.shirtNumber ?? ""} ${esc(p.player.name)}</option>`).join("")}</select><button class="btn" id="hg">Pokaż</button></div><div id="hc"></div>`;
+      $("#hg").onclick = () => drawHeat(d.lastMatch.id, $("#hp").value);
+    } catch (e) { $("#hb").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+    finally { $("#hl").style.display = "none"; }
+  };
+}
+async function drawHeat(eventId, playerId) {
+  const c = $("#hc"); c.innerHTML = `<p class="mut">Ładowanie…</p>`;
+  try {
+    const d = await api(`/api/heatmap/${eventId}/${playerId}`);
+    const pts = (d.heatmap || []).filter((p) => typeof p.x === "number" && typeof p.y === "number");
+    if (!pts.length) { c.innerHTML = `<p class="mut">Brak danych heatmapy dla tego zawodnika w tym meczu.</p>`; return; }
+    c.innerHTML = `<canvas class="pitch" id="cv" width="630" height="408"></canvas><div class="mut" style="font-size:12px">Kierunek ataku: w prawo</div>`;
+    const cv = $("#cv"), g = cv.getContext("2d"), W = cv.width, H = cv.height;
+    g.fillStyle = "#14532d"; g.fillRect(0, 0, W, H);
+    g.strokeStyle = "rgba(255,255,255,.55)"; g.lineWidth = 2; g.strokeRect(10, 10, W - 20, H - 20);
+    g.beginPath(); g.moveTo(W / 2, 10); g.lineTo(W / 2, H - 10); g.stroke();
+    g.beginPath(); g.arc(W / 2, H / 2, 50, 0, 7); g.stroke();
+    for (const s of [10, W - 10]) { const dir = s < W / 2 ? 1 : -1; g.strokeRect(dir > 0 ? s : s - 100, H / 2 - 100, 100, 200); g.strokeRect(dir > 0 ? s : s - 36, H / 2 - 45, 36, 90); }
+    for (const p of pts) {
+      const x = 10 + (p.x / 100) * (W - 20), y = 10 + (p.y / 100) * (H - 20);
+      const gr = g.createRadialGradient(x, y, 0, x, y, 34);
+      gr.addColorStop(0, "rgba(255,70,0,.14)"); gr.addColorStop(1, "rgba(255,70,0,0)");
+      g.fillStyle = gr; g.fillRect(x - 34, y - 34, 68, 68);
+    }
+  } catch (e) { c.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
 function go(v) {
   view = v; clearInterval(timer); timer = null;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
-  if (v === "live") { showLive(); timer = setInterval(() => showLive(true), 30000); }
+  if (v === "live") showLive();
   else if (v === "round") showRound();
+  else if (v === "ai") showAnalysis();
   else showTable();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));

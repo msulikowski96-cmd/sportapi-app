@@ -3,134 +3,187 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mecze i szczegóły</title>
+<title>Ekstraklasa</title>
 <style>
-  :root { --bg:#0f1420; --card:#1a2133; --line:#2a3550; --txt:#e8ecf5; --mut:#8b97b3; --acc:#3b82f6; --live:#ef4444; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--txt); }
-  header { padding:16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
-  h1 { margin:0 0 12px; font-size:20px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; }
-  select, input, button { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px 12px; font-size:14px; }
-  button { cursor:pointer; } button.p { background:var(--acc); border-color:var(--acc); }
-  main { max-width:900px; margin:0 auto; padding:16px; display:grid; gap:16px; }
-  .league { color:var(--mut); font-size:12px; margin:14px 0 6px; text-transform:uppercase; letter-spacing:.04em; }
-  .match { display:grid; grid-template-columns:52px 1fr auto; gap:8px; align-items:center; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:6px; cursor:pointer; }
-  .match:hover { border-color:var(--acc); }
-  .time { color:var(--mut); font-size:13px; } .time.live { color:var(--live); font-weight:700; }
-  .teams div { padding:1px 0; } .score { text-align:right; font-weight:700; min-width:24px; }
-  .score div { padding:1px 0; }
-  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
-  .big { display:grid; grid-template-columns:1fr auto 1fr; gap:12px; align-items:center; text-align:center; margin:8px 0 16px; }
-  .big .n { font-size:18px; font-weight:600; } .big .s { font-size:34px; font-weight:800; }
-  dl { display:grid; grid-template-columns:150px 1fr; gap:6px 12px; margin:0; font-size:14px; }
-  dt { color:var(--mut); } dd { margin:0; }
-  .err { color:#fca5a5; } .mut { color:var(--mut); }
-  details { margin-top:12px; } pre { overflow:auto; font-size:12px; background:#0b101a; padding:10px; border-radius:8px; }
+  :root { --bg:#0e1118; --card:#171c28; --line:#262e42; --txt:#e9edf6; --mut:#8a96b2; --acc:#e11d48; --live:#ef4444; --ok:#22c55e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:14px 16px 0; background:var(--bg); position:sticky; top:0; z-index:5; border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 10px; font-size:19px; } h1 span { color:var(--acc); }
+  nav { display:flex; gap:4px; overflow-x:auto; }
+  nav button { background:none; border:0; color:var(--mut); font-size:14px; padding:10px 12px; cursor:pointer; border-bottom:3px solid transparent; white-space:nowrap; }
+  nav button.on { color:var(--txt); border-color:var(--acc); font-weight:600; }
+  main { max-width:760px; margin:0 auto; padding:14px; }
+  .mut { color:var(--mut); } .err { color:#fca5a5; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { color:var(--mut); font-weight:500; font-size:12px; text-align:center; padding:6px 4px; }
+  td { padding:9px 4px; text-align:center; border-top:1px solid var(--line); }
+  td.t { text-align:left; font-weight:500; } th.t { text-align:left; }
+  td.pos { color:var(--mut); width:26px; } td.pts { font-weight:700; }
+  tr.z1 td.pos { box-shadow:inset 3px 0 var(--ok); } tr.z2 td.pos { box-shadow:inset 3px 0 #3b82f6; } tr.z3 td.pos { box-shadow:inset 3px 0 #f59e0b; } tr.zr td.pos { box-shadow:inset 3px 0 var(--live); }
+  .bar { display:flex; align-items:center; justify-content:center; gap:14px; margin-bottom:12px; }
+  .bar button, .btn { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:15px; cursor:pointer; }
+  .bar b { min-width:110px; text-align:center; }
+  .day { color:var(--mut); font-size:12px; margin:14px 0 6px; text-transform:uppercase; letter-spacing:.04em; }
+  .m { display:grid; grid-template-columns:50px 1fr auto; gap:8px; align-items:center; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:6px; cursor:pointer; }
+  .m:hover { border-color:var(--acc); }
+  .tm { color:var(--mut); font-size:13px; } .tm.live { color:var(--live); font-weight:700; }
+  .sc { text-align:right; font-weight:700; min-width:22px; } .m div div, .sc div { padding:1px 0; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .big { display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; text-align:center; }
+  .big .n { font-size:17px; font-weight:600; } .big .s { font-size:34px; font-weight:800; }
+  .sub { text-align:center; color:var(--mut); font-size:13px; margin:6px 0 12px; }
+  h3 { margin:18px 0 8px; font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; }
+  .inc { display:grid; grid-template-columns:1fr 44px 1fr; gap:6px; font-size:14px; padding:4px 0; }
+  .inc .h { text-align:right; } .inc .mn { text-align:center; color:var(--mut); }
+  .st { margin:9px 0; font-size:13px; } .st .l { display:flex; justify-content:space-between; margin-bottom:3px; }
+  .st .b { display:flex; height:6px; background:var(--line); border-radius:3px; overflow:hidden; } .st .b i { background:var(--acc); display:block; }
+  .lu { display:grid; grid-template-columns:1fr 1fr; gap:12px; font-size:13px; } .lu div div { padding:2px 0; }
+  .lu .no { color:var(--mut); display:inline-block; width:24px; }
+  .back { margin-bottom:12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>⚽ Mecze i szczegóły wydarzeń</h1>
-  <div class="row">
-    <select id="sport">
-      <option value="football">Piłka nożna</option>
-      <option value="basketball">Koszykówka</option>
-      <option value="tennis">Tenis</option>
-      <option value="ice-hockey">Hokej</option>
-      <option value="american-football">Futbol amerykański</option>
-      <option value="baseball">Baseball</option>
-    </select>
-    <input type="date" id="date">
-    <button class="p" id="load">Mecze z dnia</button>
-    <button id="live">🔴 Na żywo</button>
-    <input id="eid" placeholder="ID wydarzenia" inputmode="numeric" style="width:140px">
-    <button id="byid">Szczegóły</button>
-  </div>
+  <h1>⚽ <span>Ekstraklasa</span></h1>
+  <nav id="nav">
+    <button data-v="live" class="on">🔴 Na żywo</button>
+    <button data-v="round">Kolejki</button>
+    <button data-v="table">Tabela</button>
+  </nav>
 </header>
-<main>
-  <section id="detail"></section>
-  <section id="list"><p class="mut">Wybierz dzień albo „Na żywo”, potem kliknij mecz.</p></section>
-</main>
+<main id="app"></main>
 <script>
-const $ = (id) => document.getElementById(id);
-$("date").value = new Date().toISOString().slice(0, 10);
+const $ = (s) => document.querySelector(s), app = $("#app");
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
-const hhmm = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "";
+const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString("pl-PL", { hour:"2-digit", minute:"2-digit" });
+const fmtDay = (t) => new Date(t * 1000).toLocaleDateString("pl-PL", { weekday:"long", day:"numeric", month:"long" });
+let view = "live", round = null, maxRound = 34, curRound = null, timer = null, last = null;
 
-async function api(path) {
-  const r = await fetch(path);
-  const j = await r.json();
+async function api(p) {
+  const r = await fetch(p); const j = await r.json();
   if (!r.ok) throw new Error(j.error || j.message || `Błąd ${r.status}`);
   return j;
 }
+const loading = (t = "Ładowanie…") => { app.innerHTML = `<p class="mut">${t}</p>`; };
+const fail = (e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; };
 
-function renderList(events) {
-  if (!events?.length) { $("list").innerHTML = '<p class="mut">Brak meczów.</p>'; return; }
-  const groups = {};
-  for (const e of events) {
-    const key = `${e.tournament?.category?.name ?? ""} · ${e.tournament?.name ?? "Inne"}`;
-    (groups[key] ||= []).push(e);
+function matchRow(e) {
+  const st = e.status?.type, live = st === "inprogress", sc = live || st === "finished";
+  const left = live ? "LIVE" : st === "finished" ? "KON." : fmtTime(e.startTimestamp);
+  return `<div class="m" data-id="${e.id}"><div class="tm ${live ? "live" : ""}">${left}</div>
+    <div><div>${esc(e.homeTeam?.name)}</div><div>${esc(e.awayTeam?.name)}</div></div>
+    <div class="sc">${sc ? `<div>${e.homeScore?.current ?? "-"}</div><div>${e.awayScore?.current ?? "-"}</div>` : ""}</div></div>`;
+}
+function bindRows() { document.querySelectorAll(".m").forEach((el) => el.onclick = () => openMatch(el.dataset.id)); }
+function listByDay(events) {
+  let html = "", day = "";
+  for (const e of [...events].sort((a, b) => a.startTimestamp - b.startTimestamp)) {
+    const d = fmtDay(e.startTimestamp);
+    if (d !== day) { day = d; html += `<div class="day">${esc(d)}</div>`; }
+    html += matchRow(e);
   }
-  let html = "";
-  for (const [league, evs] of Object.entries(groups)) {
-    html += `<div class="league">${esc(league)}</div>`;
-    for (const e of evs.sort((a, b) => a.startTimestamp - b.startTimestamp)) {
-      const live = e.status?.type === "inprogress";
-      const st = e.status?.type;
-      const left = live ? "LIVE" : st === "finished" ? "KON." : hhmm(e.startTimestamp);
-      const showScore = st === "inprogress" || st === "finished";
-      html += `<div class="match" data-id="${e.id}">
-        <div class="time ${live ? "live" : ""}">${left}</div>
-        <div class="teams"><div>${esc(e.homeTeam?.name)}</div><div>${esc(e.awayTeam?.name)}</div></div>
-        <div class="score">${showScore ? `<div>${e.homeScore?.current ?? "-"}</div><div>${e.awayScore?.current ?? "-"}</div>` : ""}</div>
-      </div>`;
-    }
-  }
-  $("list").innerHTML = html;
-  document.querySelectorAll(".match").forEach((el) => el.onclick = () => showEvent(el.dataset.id));
+  return html;
 }
 
-async function loadList(path) {
-  $("list").innerHTML = '<p class="mut">Ładowanie…</p>';
-  try { renderList((await api(path)).events); }
-  catch (e) { $("list").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-}
-
-async function showEvent(id) {
-  $("detail").innerHTML = '<div class="panel mut">Ładowanie szczegółów…</div>';
-  window.scrollTo({ top: 0, behavior: "smooth" });
+async function showLive(silent) {
+  if (!silent) loading();
   try {
-    const e = (await api(`/api/event/${id}`)).event;
-    const rows = [
-      ["Rozgrywki", `${e.tournament?.category?.name ?? ""} – ${e.tournament?.name ?? ""}`],
-      ["Sezon", e.season?.name],
-      ["Runda", e.roundInfo?.name || e.roundInfo?.round],
-      ["Status", e.status?.description],
-      ["Start", e.startTimestamp ? new Date(e.startTimestamp * 1000).toLocaleString("pl-PL") : ""],
-      ["Stadion", e.venue?.stadium?.name || e.venue?.name],
-      ["Miasto", e.venue?.city?.name],
-      ["Sędzia", e.referee?.name],
-      ["Widzów", e.attendance],
-      ["Wynik do przerwy", e.homeScore?.period1 != null ? `${e.homeScore.period1}:${e.awayScore?.period1}` : ""],
-    ].filter(([, v]) => v !== "" && v != null && v !== undefined);
-    $("detail").innerHTML = `<div class="panel">
-      <div class="big">
-        <div class="n">${esc(e.homeTeam?.name)}</div>
-        <div class="s">${e.homeScore?.current ?? "-"} : ${e.awayScore?.current ?? "-"}</div>
-        <div class="n">${esc(e.awayTeam?.name)}</div>
-      </div>
-      <dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
-      <details><summary class="mut">Surowa odpowiedź API</summary><pre>${esc(JSON.stringify(e, null, 2))}</pre></details>
-    </div>`;
-  } catch (err) {
-    $("detail").innerHTML = `<div class="panel err">${esc(err.message)}</div>`;
-  }
+    const ev = (await api("/api/live")).events;
+    app.innerHTML = ev.length
+      ? `<div class="day">Trwające mecze · odświeżanie co 30 s</div>` + ev.map(matchRow).join("")
+      : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`;
+    bindRows();
+  } catch (e) { if (!silent) fail(e); }
 }
 
-$("load").onclick = () => loadList(`/api/scheduled/${$("sport").value}/${$("date").value}`);
-$("live").onclick = () => loadList(`/api/live/${$("sport").value}`);
-$("byid").onclick = () => { const v = $("eid").value.trim(); if (v) showEvent(v); };
+async function showRound() {
+  loading();
+  try {
+    if (round === null) {
+      const r = await api("/api/rounds");
+      curRound = r.currentRound?.round || 1; maxRound = r.rounds?.length || 34; round = curRound;
+    }
+    const ev = (await api(`/api/round/${round}`)).events || [];
+    app.innerHTML = `<div class="bar"><button id="pr">‹</button><b>Kolejka ${round}</b><button id="nx">›</button></div>`
+      + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów.</p>`);
+    $("#pr").onclick = () => { if (round > 1) { round--; showRound(); } };
+    $("#nx").onclick = () => { if (round < maxRound) { round++; showRound(); } };
+    bindRows();
+  } catch (e) { fail(e); }
+}
+
+async function showTable() {
+  loading();
+  try {
+    const rows = (await api("/api/table")).standings[0].rows, n = rows.length;
+    const zone = (r) => r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
+    app.innerHTML = `<div class="panel" style="padding:8px 10px"><table>
+      <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
+      ${rows.map((r) => `<tr class="${zone(r)}"><td class="pos">${r.position}</td><td class="t">${esc(r.team.name)}</td>
+        <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
+        <td>${r.scoresFor}:${r.scoresAgainst}</td><td class="pts">${r.points}</td></tr>`).join("")}
+    </table></div>
+    <p class="mut" style="font-size:12px">Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa</p>`;
+  } catch (e) { fail(e); }
+}
+
+function incLine(i) {
+  const home = i.isHome === true;
+  const side = (txt) => home ? [txt, ""] : ["", txt];
+  let txt = null;
+  if (i.incidentType === "goal") txt = `⚽ ${esc(i.player?.name || "Gol")}${i.incidentClass === "ownGoal" ? " (sam.)" : i.incidentClass === "penalty" ? " (k.)" : ""}`;
+  else if (i.incidentType === "card") txt = `${i.incidentClass === "yellow" ? "🟨" : "🟥"} ${esc(i.player?.name || "")}`;
+  else return "";
+  const [h, a] = side(txt);
+  return `<div class="inc"><div class="h">${h}</div><div class="mn">${i.time}'</div><div>${a}</div></div>`;
+}
+
+async function openMatch(id) {
+  clearInterval(timer); timer = null;
+  loading("Ładowanie meczu…");
+  window.scrollTo({ top: 0 });
+  try {
+    const [ev, inc, stats, lu] = await Promise.all([
+      api(`/api/event/${id}`),
+      api(`/api/event/${id}/incidents`).catch(() => ({})),
+      api(`/api/event/${id}/stats`).catch(() => ({})),
+      api(`/api/event/${id}/lineups`).catch(() => ({})),
+    ]);
+    const e = ev.event, played = ["inprogress", "finished"].includes(e.status?.type);
+    let html = `<button class="btn back" id="bk">‹ Wróć</button><div class="panel">
+      <div class="big"><div class="n">${esc(e.homeTeam?.name)}</div>
+      <div class="s">${played ? `${e.homeScore?.current ?? 0} : ${e.awayScore?.current ?? 0}` : fmtTime(e.startTimestamp)}</div>
+      <div class="n">${esc(e.awayTeam?.name)}</div></div>
+      <div class="sub">${esc(e.status?.description || "")} · ${esc(fmtDay(e.startTimestamp))} ${fmtTime(e.startTimestamp)}<br>
+      ${esc([e.venue?.stadium?.name, e.venue?.city?.name].filter(Boolean).join(", "))}${e.referee?.name ? " · sędzia: " + esc(e.referee.name) : ""}</div>`;
+    const lines = (inc.incidents || []).filter((i) => ["goal", "card"].includes(i.incidentType)).sort((a, b) => a.time - b.time).map(incLine).join("");
+    if (lines) html += `<h3>Przebieg</h3>${lines}`;
+    const grp = (stats.statistics || []).find((s) => s.period === "ALL")?.groups?.[0]?.statisticsItems || [];
+    if (grp.length) html += `<h3>Statystyki</h3>` + grp.slice(0, 10).map((s) => {
+      const h = parseFloat(s.homeValue ?? s.home) || 0, a = parseFloat(s.awayValue ?? s.away) || 0, t = h + a || 1;
+      return `<div class="st"><div class="l"><span>${esc(s.home)}</span><span class="mut">${esc(s.name)}</span><span>${esc(s.away)}</span></div>
+        <div class="b"><i style="width:${(h / t) * 100}%"></i></div></div>`;
+    }).join("");
+    if (lu.home?.players?.length) {
+      const col = (t) => `<div><b>${esc(t.formation || "")}</b>` + t.players.filter((p) => !p.substitute)
+        .map((p) => `<div><span class="no">${p.shirtNumber ?? ""}</span>${esc(p.player.name)}</div>`).join("") + `</div>`;
+      html += `<h3>Składy</h3><div class="lu">${col(lu.home)}${col(lu.away)}</div>`;
+    }
+    app.innerHTML = html + `</div>`;
+    $("#bk").onclick = () => go(view);
+  } catch (err) { fail(err); }
+}
+
+function go(v) {
+  view = v; clearInterval(timer); timer = null;
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
+  if (v === "live") { showLive(); timer = setInterval(() => showLive(true), 30000); }
+  else if (v === "round") showRound();
+  else showTable();
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));
+go("live");
 </script>
 </body>
 </html>

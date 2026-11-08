@@ -164,6 +164,77 @@ async function analysis(teamId) {
   return v;
 }
 
+// ---------- API-Football: opcja zastępcza ----------
+// Darmowy plan: 100 zapytań/dzień, dane tylko z okna wczoraj–dziś–jutro (bez tabeli i sezonu 26/27).
+const AF_KEY = process.env.API_FOOTBALL_KEY;
+const AF_BASE = process.env.AF_BASE || "https://v3.football.api-sports.io";
+const AF_STATUS = { NS: "notstarted", TBD: "notstarted", "1H": "inprogress", HT: "inprogress", "2H": "inprogress", ET: "inprogress",
+  BT: "inprogress", P: "inprogress", LIVE: "inprogress", INT: "inprogress", SUSP: "inprogress", FT: "finished", AET: "finished", PEN: "finished" };
+const AF_DESC = { NS: "Zaplanowany", TBD: "Do ustalenia", "1H": "1. połowa", HT: "Przerwa", "2H": "2. połowa", ET: "Dogrywka", P: "Rzuty karne",
+  FT: "Zakończony", AET: "Po dogrywce", PEN: "Po rzutach karnych", PST: "Przełożony", CANC: "Odwołany", SUSP: "Przerwany", INT: "Przerwany", ABD: "Przerwany", LIVE: "Trwa" };
+
+async function afCall(p, ttl = 120000) {
+  if (!AF_KEY) throw new HttpErr(503, "Brak zmiennej środowiskowej API_FOOTBALL_KEY (opcja zastępcza wyłączona)");
+  const ck = "AF:" + p, hit = cache.get(ck);
+  if (hit && Date.now() - hit.t < ttl) return hit.v;
+  try {
+    const r = await fetch(AF_BASE + p, { headers: { "x-apisports-key": AF_KEY }, signal: AbortSignal.timeout(25000) });
+    const d = await r.json().catch(() => ({}));
+    const errs = d.errors && typeof d.errors === "object" ? Object.values(d.errors) : [];
+    if (!r.ok || errs.length) {
+      if (hit) return hit.v;
+      const msg = d.errors?.plan || d.errors?.requests || d.errors?.rateLimit || errs[0] || `Błąd API-Football (${r.status})`;
+      throw new HttpErr(r.ok ? 403 : r.status, `API-Football: ${msg}`);
+    }
+    cache.set(ck, { t: Date.now(), v: d.response });
+    return d.response;
+  } catch (e) {
+    if (hit) return hit.v;
+    throw e;
+  }
+}
+const afEvent = (f) => ({
+  id: `af-${f.fixture.id}`,
+  homeTeam: { id: f.teams.home.id, name: f.teams.home.name }, awayTeam: { id: f.teams.away.id, name: f.teams.away.name },
+  homeScore: { current: f.goals.home }, awayScore: { current: f.goals.away },
+  startTimestamp: f.fixture.timestamp,
+  status: { type: AF_STATUS[f.fixture.status.short] || "postponed", description: AF_DESC[f.fixture.status.short] || f.fixture.status.long },
+  roundInfo: { round: parseInt((f.league?.round || "").match(/(\d+)\s*$/)?.[1], 10) || undefined },
+  venue: { stadium: { name: f.fixture.venue?.name }, city: { name: f.fixture.venue?.city } },
+  referee: f.fixture.referee ? { name: f.fixture.referee } : undefined,
+  tournament: { name: "Ekstraklasa", category: { name: "Poland" } },
+});
+const afLeague = (list) => (list || []).filter((f) => f.league?.id === 106).map(afEvent);
+
+async function afEventRoute(id, sub) {
+  const fx = (await afCall(`/fixtures?id=${id}`, 120000))[0];
+  if (!fx) throw new HttpErr(404, "Nie znaleziono meczu");
+  const homeId = fx.teams.home.id;
+  if (!sub) return { event: afEvent(fx) };
+  if (sub === "incidents") {
+    const ev = await afCall(`/fixtures/events?fixture=${id}`, 600000);
+    return { incidents: ev.filter((x) => (x.type === "Goal" && x.detail !== "Missed Penalty") || x.type === "Card").map((x) => ({
+      incidentType: x.type === "Goal" ? "goal" : "card",
+      incidentClass: x.type === "Goal" ? (/Own/i.test(x.detail) ? "ownGoal" : /Penalty/i.test(x.detail) ? "penalty" : "regular") : (/Yellow/i.test(x.detail) && !/Red/i.test(x.detail) ? "yellow" : "red"),
+      time: x.time.elapsed, isHome: x.team.id === homeId, player: { name: x.player?.name },
+    })) };
+  }
+  if (sub === "stats") {
+    const st = await afCall(`/fixtures/statistics?fixture=${id}`, 600000);
+    const h = st.find((s) => s.team.id === homeId)?.statistics || [], a = st.find((s) => s.team.id !== homeId)?.statistics || [];
+    const num = (v) => parseFloat(String(v ?? 0).replace("%", "")) || 0;
+    const items = h.map((x) => { const y = a.find((z) => z.type === x.type);
+      return { name: x.type, home: String(x.value ?? 0), away: String(y?.value ?? 0), homeValue: num(x.value), awayValue: num(y?.value) }; });
+    return { statistics: [{ period: "ALL", groups: [{ groupName: "Statystyki", statisticsItems: items }] }] };
+  }
+  const lu = await afCall(`/fixtures/lineups?fixture=${id}`, 600000);
+  const side = (t) => t && { formation: t.formation, players: [
+    ...(t.startXI || []).map((x) => ({ player: { id: x.player.id, name: x.player.name }, shirtNumber: x.player.number, substitute: false })),
+    ...(t.substitutes || []).map((x) => ({ player: { id: x.player.id, name: x.player.name }, shirtNumber: x.player.number, substitute: true })),
+  ] };
+  return { home: side(lu.find((t) => t.team.id === homeId)), away: side(lu.find((t) => t.team.id !== homeId)) };
+}
+
 // ---------- routing ----------
 function send(res, status, obj) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -185,11 +256,22 @@ async function route(p) {
     return callApi(`/api/v1/unique-tournament/${TOURNAMENT}/season/${s}/events/round/${m[1]}`, 300000);
   }
   if (p === "/api/live") {
-    const r = await callApi(`/api/v1/sport/football/events/live`, 90000);
-    if (r.status !== 200) return r;
-    return { status: 200, data: { events: (r.data?.events || []).filter((e) => e.tournament?.uniqueTournament?.id === TOURNAMENT) } };
+    let r;
+    try { r = await callApi(`/api/v1/sport/football/events/live`, 90000); } catch (e) { r = { status: 502, data: { error: String(e.message || e) } }; }
+    if (r.status === 200) {
+      return { status: 200, data: { source: "sportapi7", events: (r.data?.events || []).filter((e) => e.tournament?.uniqueTournament?.id === TOURNAMENT) } };
+    }
+    if (AF_KEY) {
+      try { return { status: 200, data: { source: "api-football", events: afLeague(await afCall("/fixtures?live=all", 60000)) } }; } catch {}
+    }
+    return r;
   }
-  if ((m = p.match(/^\/api\/event\/(\d+)(?:\/(stats|lineups|incidents))?$/))) {
+  if ((m = p.match(/^\/api\/day\/(\d{4}-\d{2}-\d{2})$/))) { // tylko API-Football (wczoraj–dziś–jutro)
+    const list = await afCall(`/fixtures?date=${m[1]}&timezone=Europe/Warsaw`, 120000);
+    return { status: 200, data: { source: "api-football", events: afLeague(list) } };
+  }
+  if ((m = p.match(/^\/api\/event\/(af-\d+|\d+)(?:\/(stats|lineups|incidents))?$/))) {
+    if (m[1].startsWith("af-")) return { status: 200, data: await afEventRoute(m[1].slice(3), m[2]) };
     const sub = { stats: "/statistics", lineups: "/lineups", incidents: "/incidents" }[m[2]] || "";
     return callApi(`/api/v1/event/${m[1]}${sub}`, m[2] ? 3600000 : 120000);
   }

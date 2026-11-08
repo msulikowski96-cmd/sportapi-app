@@ -42,7 +42,7 @@
   .lu .no { color:var(--mut); display:inline-block; width:24px; }
   .back { margin-bottom:12px; }
   .row2 { display:flex; gap:8px; } .row2 select { flex:1; min-width:0; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px; font-size:15px; }
-  .btn:disabled { opacity:.5; }
+  .btn:disabled, .bar button:disabled { opacity:.4; }
   .chips { display:flex; gap:6px; margin:8px 0; } .chip { width:30px; height:30px; border-radius:8px; display:grid; place-items:center; font-weight:700; font-size:13px; color:#fff; }
   .chip.Z { background:#16a34a; } .chip.R { background:#6b7280; } .chip.P { background:#dc2626; }
   .nm { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:10px 0; font-size:14px; }
@@ -101,9 +101,10 @@ function listByDay(events) {
 async function showLive(silent) {
   if (!silent) loading();
   try {
-    const ev = (await api("/api/live")).events;
+    const lv = await api("/api/live"), ev = lv.events;
+    const fb = lv.source === "api-football" ? `<div class="nm">Tryb zastępczy: dane z API-Football (SportAPI7 niedostępne).</div>` : "";
     app.innerHTML = ev.length
-      ? `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("")
+      ? fb + `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("")
       : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`;
     app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">dane z pamięci podręcznej do 90 s (oszczędzanie limitu API)</span></p>`);
     $("#rf").onclick = () => showLive();
@@ -124,7 +125,25 @@ async function showRound() {
     $("#pr").onclick = () => { if (round > 1) { round--; showRound(); } };
     $("#nx").onclick = () => { if (round < maxRound) { round++; showRound(); } };
     bindRows();
-  } catch (e) { fail(e); }
+  } catch (e) { showDay(e.message); }
+}
+
+// Tryb zastępczy: mecze z wczoraj/dziś/jutro z API-Football
+let dayOff = 0;
+async function showDay(why) {
+  const ds = new Date(Date.now() + dayOff * 86400000).toLocaleDateString("sv-SE");
+  loading();
+  try {
+    const ev = (await api(`/api/day/${ds}`)).events;
+    app.innerHTML = `<div class="nm">Tryb zastępczy (API-Football): ${esc(why || "")}<br><span class="mut">Dostępne są tylko mecze z wczoraj, dziś i jutra.</span></div>
+      <div class="bar"><button id="pd" ${dayOff <= -1 ? "disabled" : ""}>‹</button><b>${["Wczoraj", "Dziś", "Jutro"][dayOff + 1]}</b><button id="nd" ${dayOff >= 1 ? "disabled" : ""}>›</button></div>`
+      + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów Ekstraklasy tego dnia.</p>`);
+    $("#pd").onclick = () => { dayOff--; showDay(why); };
+    $("#nd").onclick = () => { dayOff++; showDay(why); };
+    bindRows();
+  } catch (e2) {
+    app.innerHTML = `<p class="err">${esc(why || e2.message)}</p><p class="mut" style="font-size:12px">Tryb zastępczy też niedostępny: ${esc(e2.message)}</p>`;
+  }
 }
 
 async function showTable() {

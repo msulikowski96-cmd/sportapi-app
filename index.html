@@ -77,6 +77,7 @@ async function api(p) {
   if (!r.ok) throw new Error(j.error || j.message || `Błąd ${r.status}`);
   return j;
 }
+const note = (d) => (d && d.note ? `<div class="nm">${esc(d.note)}</div>` : "");
 const loading = (t = "Ładowanie…") => { app.innerHTML = `<p class="mut">${t}</p>`; };
 const fail = (e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; };
 
@@ -103,10 +104,10 @@ async function showLive(silent) {
   try {
     const lv = await api("/api/live"), ev = lv.events;
     const fb = lv.source === "api-football" ? `<div class="nm">Tryb zastępczy: dane z API-Football (SportAPI7 niedostępne).</div>` : "";
-    app.innerHTML = ev.length
+    app.innerHTML = note(lv) + (ev.length
       ? fb + `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("")
-      : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`;
-    app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">dane z pamięci podręcznej do 90 s (oszczędzanie limitu API)</span></p>`);
+      : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`);
+    app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">dane z pamięci podręcznej (oszczędzanie dziennego limitu API)</span></p>`);
     $("#rf").onclick = () => showLive();
     bindRows();
   } catch (e) { if (!silent) fail(e); }
@@ -119,8 +120,8 @@ async function showRound() {
       const r = await api("/api/rounds");
       curRound = r.currentRound?.round || 1; maxRound = r.rounds?.length || 34; round = curRound;
     }
-    const ev = (await api(`/api/round/${round}`)).events || [];
-    app.innerHTML = `<div class="bar"><button id="pr">‹</button><b>Kolejka ${round}</b><button id="nx">›</button></div>`
+    const rd = await api(`/api/round/${round}`), ev = rd.events || [];
+    app.innerHTML = note(rd) + `<div class="bar"><button id="pr">‹</button><b>Kolejka ${round}</b><button id="nx">›</button></div>`
       + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów.</p>`);
     $("#pr").onclick = () => { if (round > 1) { round--; showRound(); } };
     $("#nx").onclick = () => { if (round < maxRound) { round++; showRound(); } };
@@ -149,9 +150,9 @@ async function showDay(why) {
 async function showTable() {
   loading();
   try {
-    const rows = (await api("/api/table")).standings[0].rows, n = rows.length;
+    const tb = await api("/api/table"), rows = tb.standings[0].rows, n = rows.length;
     const zone = (r) => r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
-    app.innerHTML = `<div class="panel" style="padding:8px 10px"><table>
+    app.innerHTML = note(tb) + `<div class="panel" style="padding:8px 10px"><table>
       <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
       ${rows.map((r) => `<tr class="${zone(r)}"><td class="pos">${r.position}</td><td class="t">${esc(r.team.name)}</td>
         <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>

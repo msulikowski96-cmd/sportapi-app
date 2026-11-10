@@ -101,6 +101,7 @@ function parseJson(text) {
 async function askAi(ctx, next, teamName) {
   const system = "Jesteś analitykiem piłkarskim polskiej Ekstraklasy. Opierasz się WYŁĄCZNIE na dostarczonych danych " +
     "(nie wymyślaj kontuzji, transferów ani innych faktów, których tam nie ma). Piszesz po polsku, rzeczowo. " +
+    "Jeśli w danych są niedostępni zawodnicy (kontuzje, zawieszenia), wartości rynkowe lub najlepsi strzelcy – uwzględnij je w ocenie. " +
     "Zwracasz wyłącznie jeden obiekt JSON, bez komentarza i bez markdown.";
   const user = `Dane:\n${JSON.stringify(ctx, null, 1)}\n\nZwróć JSON o dokładnie takim schemacie:\n` +
     `{"podsumowanie_formy":"2-3 zdania o bieżącej formie","mocne_strony":["..","..",".."],"slabe_strony":["..","..",".."],` +
@@ -562,6 +563,143 @@ async function tmEventRoute(id, sub) {
   return { home: side(d.homeClub) || undefined, away: side(d.awayClub) || undefined };
 }
 
+// ---------- Transfermarkt: dane drużyny (skład, wartości, kontuzje, strzelcy) ----------
+async function pool(items, n, fn) {
+  const out = []; let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const k = i++; try { out[k] = await fn(items[k]); } catch { out[k] = null; } }
+  }));
+  return out;
+}
+const POS_PL = { GOALKEEPER: "Bramkarze", DEFENDER: "Obrońcy", MIDFIELDER: "Pomocnicy", ATTACK: "Napastnicy", FORWARD: "Napastnicy" };
+const REASON_PL = [[/yellow card suspension/i, "zawieszenie za kartki"], [/red card suspension/i, "zawieszenie za czerwoną kartkę"], [/cruciate ligament/i, "zerwane więzadła krzyżowe"],
+  [/groin/i, "uraz pachwiny"], [/ankle/i, "uraz kostki"], [/knee/i, "uraz kolana"], [/hamstring/i, "uraz mięśnia dwugłowego"], [/muscle|muscular/i, "uraz mięśniowy"],
+  [/thigh/i, "uraz uda"], [/calf/i, "uraz łydki"], [/foot/i, "uraz stopy"], [/back/i, "uraz pleców"], [/shoulder/i, "uraz barku"], [/ill|virus|flu|pneumonia/i, "choroba"],
+  [/fracture|broken/i, "złamanie"], [/surgery|operation/i, "po operacji"], [/injur/i, "kontuzja"]];
+const plReason = (n) => REASON_PL.find(([re]) => re.test(String(n || "")))?.[1] || String(n || "kontuzja");
+const todayIso = () => new Date().toISOString().slice(0, 10);
+const teamMemo = new Map();
+function tmTeam(clubId, season) {
+  const hit = teamMemo.get(clubId);
+  if (hit?.v && Date.now() - hit.t < 3 * HOUR) return Promise.resolve(hit.v);
+  if (hit?.p) return hit.p; // trwa już liczenie
+  const p = (async () => {
+    const [club, stadium, coachRec, squadRec] = await Promise.all([
+      tmCall(`/club/${clubId}`, 24 * HOUR), tmCall(`/club/${clubId}/stadium`, 24 * HOUR).catch(() => null),
+      tmCall(`/club/${clubId}/coach`, 24 * HOUR).catch(() => null), tmCall(`/club/${clubId}/squad`, 12 * HOUR)]);
+    const members = (squadRec?.squad || []).filter((m) => m.type === "current" || !m.type);
+    const [pl, coaches] = await Promise.all([tmEntities("/players", members.map((m) => m.playerId)),
+      coachRec?.coachId ? tmEntities("/coaches", [coachRec.coachId]).catch(() => ({})) : {}]);
+    const squad = members.map((m) => {
+      const p = pl[m.playerId] || {}, mv = p.marketValueDetails?.current;
+      return { id: String(m.playerId), name: p.name || String(m.playerId), shirt: m.shirtNumber, captain: !!m.isCaptain,
+        position: POS_PL[p.attributes?.positionGroup] || "Inni", detail: p.attributes?.position?.name || "", age: p.lifeDates?.age ?? null,
+        contract: p.attributes?.contractUntil || null, value: mv?.value ?? mv?.amount ?? null };
+    }).sort((a, b) => (b.value || 0) - (a.value || 0));
+    // niedostępni: sprawdzamy 22 najcenniejszych zawodników (kontuzje + zawieszenia), wynik w cache na 4 h
+    const today = todayIso(), tops = squad.slice(0, 22);
+    const unavailable = (await pool(tops, 6, async (pl1) => {
+      const [inj, abs] = await Promise.all([tmCall(`/player/${pl1.id}/injury`, 4 * HOUR).catch(() => null), tmCall(`/player/${pl1.id}/absence`, 4 * HOUR).catch(() => null)]);
+      const out = [];
+      for (const x of inj?.injuries || []) if (!x.end || x.end >= today) out.push({ name: pl1.name, type: "kontuzja", reason: plReason(x.name), until: x.end || null });
+      for (const x of abs?.absences || []) if (x.seasonId >= 2026 && x.end && x.end >= today) out.push({ name: pl1.name, type: "zawieszenie", reason: plReason(x.name), until: x.end });
+      return out.slice(0, 2);
+    })).flat().filter(Boolean);
+    // strzelcy i asystenci z rozegranych meczów ligowych (mecz z cache 24 h)
+    const games = season.matches.filter((m) => m.status === "finished" && (m.home_team.team_id === String(clubId) || m.away_team.team_id === String(clubId)));
+    const gd = await pool(games, 4, (m) => tmCall(`/game/${m.match_id}`, 24 * HOUR));
+    const tally = new Map();
+    for (const g of gd) for (const a of g?.actions || []) {
+      if (a.type !== "GOAL" || String(a.clubId) !== String(clubId)) continue;
+      const add = (id, f) => { if (!id) return; const t = tally.get(String(id)) || { g: 0, a: 0 }; t[f]++; tally.set(String(id), t); };
+      add(a.activePlayerId, "g"); add(a.passivePlayerId, "a");
+    }
+    const missing = [...tally.keys()].filter((id) => !pl[id]);
+    const extra = missing.length ? await tmEntities("/players", missing).catch(() => ({})) : {};
+    const scorers = [...tally.entries()].map(([id, t]) => ({ name: (pl[id] || extra[id])?.name || id, goals: t.g, assists: t.a }))
+      .sort((a, b) => b.goals - a.goals || b.assists - a.assists).slice(0, 6);
+    const total = squad.reduce((n, p) => n + (p.value || 0), 0);
+    return { name: club?.name, stadium: stadium && { name: stadium.name, capacity: stadium.capacity, city: stadium.location?.city },
+      coach: coaches[coachRec?.coachId]?.name || null, squad, squadValue: total, unavailable, scorers };
+  })();
+  teamMemo.set(clubId, { t: Date.now(), p });
+  p.then((v) => teamMemo.set(clubId, { t: Date.now(), v })).catch(() => teamMemo.delete(clubId));
+  return p;
+}
+const mln = (v) => (v == null ? null : Math.round(v / 100000) / 10);
+const withDeadline = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]).catch(() => null);
+function teamCtx(t) {
+  if (!t) return undefined;
+  return { trener: t.coach, wartosc_skladu_mln_eur: mln(t.squadValue),
+    najcenniejsi_zawodnicy: t.squad.slice(0, 5).map((p) => `${p.name} (${p.detail || p.position}, ${mln(p.value)} mln €)`),
+    niedostepni_zawodnicy: t.unavailable.map((u) => `${u.name} – ${u.reason}${u.until ? " do " + u.until : ""}`),
+    najlepsi_strzelcy_druzyny: t.scorers.slice(0, 3).map((s) => `${s.name}: ${s.goals} goli, ${s.assists} asyst`) };
+}
+
+async function teamPage(clubId) {
+  const P = "tm-", season = await tmSeason(), rows = await tmTable(season);
+  const row = rows.find((r) => r.team.id === P + clubId);
+  if (!row) throw new HttpErr(404, "Nie znaleziono drużyny w tabeli Ekstraklasy");
+  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null).sort((a, b) => b.timestamp - a.timestamp);
+  const mine = fin.filter((m) => m.home_team.team_id === clubId || m.away_team.team_id === clubId);
+  const now = Date.now() / 1000;
+  const nextM = season.matches.filter((m) => (m.status === "notstarted" || m.status === "inprogress") && m.timestamp > now - 4 * 3600 &&
+    (m.home_team.team_id === clubId || m.away_team.team_id === clubId)).sort((a, b) => a.timestamp - b.timestamp)[0];
+  let next = null, h2h = [];
+  if (nextM) {
+    const home = nextM.home_team.team_id === clubId, opp = home ? nextM.away_team : nextM.home_team;
+    h2h = fin.filter((m) => [m.home_team.team_id, m.away_team.team_id].includes(clubId) && [m.home_team.team_id, m.away_team.team_id].includes(opp.team_id))
+      .map((m) => `${m.home_team.name} ${m.home}:${m.away} ${m.away_team.name} (${m.round})`);
+    next = { eventId: P + nextM.match_id, home, opponent: opp.name, opponentId: P + opp.team_id, round: roundNo(nextM.round), date: nextM.timestamp };
+  }
+  const info = await tmTeam(clubId, season);
+  return { team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
+    stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, note: seasonNote(season) };
+}
+
+// ---------- baza prognoz (Neon Postgres przez HTTP, bez zależności) ----------
+const DB_URL = process.env.DATABASE_URL;
+async function sql(query, params = []) {
+  if (!DB_URL) throw new HttpErr(503, "Brak zmiennej środowiskowej DATABASE_URL (śledzenie typów wyłączone)");
+  const r = await fetch(`https://${new URL(DB_URL).host}/sql`, { method: "POST", headers: { "Neon-Connection-String": DB_URL, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, params }), signal: AbortSignal.timeout(20000) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new HttpErr(502, `Baza danych: ${d.message || r.status}`);
+  return d.rows || [];
+}
+const scoreOf = (t) => { const m = String(t || "").match(/(\d+)\s*[:\-–]\s*(\d+)/); return m ? `${Number(m[1])}:${Number(m[2])}` : null; };
+async function savePrediction(nextM, ai) {
+  const p = ai?.prognoza;
+  if (!DB_URL || !p || !nextM || nextM.timestamp * 1000 <= Date.now()) return;
+  const w = [p.wygrana_gospodarzy, p.remis, p.wygrana_gosci].map((x) => Math.max(0, Number(x) || 0)), sum = w[0] + w[1] + w[2];
+  if (!sum) return;
+  const pr = w.map((x) => Math.round((x / sum) * 1000) / 10), pick = pr[0] >= pr[1] && pr[0] >= pr[2] ? "1" : pr[2] >= pr[1] ? "2" : "X";
+  await sql(`INSERT INTO predictions (match_id, round, match_ts, home_id, home_name, away_id, away_name, p_home, p_draw, p_away, pick, score_pred, confidence, model)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    ON CONFLICT (match_id) DO UPDATE SET round=$2, match_ts=$3, p_home=$8, p_draw=$9, p_away=$10, pick=$11, score_pred=$12, confidence=$13, model=$14, created_at=now()
+    WHERE predictions.settled_at IS NULL AND predictions.match_ts > extract(epoch from now())`,
+    [nextM.match_id, roundNo(nextM.round), nextM.timestamp, nextM.home_team.team_id, nextM.home_team.name, nextM.away_team.team_id, nextM.away_team.name,
+      pr[0], pr[1], pr[2], pick, scoreOf(p.typowany_wynik), String(p.pewnosc || ""), NV_MODEL]);
+}
+async function predictionsReport() {
+  const season = await tmSeason().catch(() => null);
+  if (season) { // rozliczenie meczów, które się zakończyły
+    const open = await sql("SELECT match_id, pick, score_pred FROM predictions WHERE settled_at IS NULL AND match_ts < $1", [Math.floor(Date.now() / 1000) - 3600]);
+    for (const r of open) {
+      const m = season.matches.find((x) => x.match_id === r.match_id);
+      if (!m || m.status !== "finished" || m.home == null) continue;
+      const out = m.home > m.away ? "1" : m.home < m.away ? "2" : "X";
+      await sql("UPDATE predictions SET actual_home=$2, actual_away=$3, outcome_ok=$4, score_ok=$5, settled_at=now() WHERE match_id=$1",
+        [r.match_id, m.home, m.away, out === r.pick, scoreOf(r.score_pred) === `${m.home}:${m.away}`]);
+    }
+  }
+  const [sum] = await sql(`SELECT count(*)::int n, coalesce(sum((outcome_ok)::int),0)::int ok, coalesce(sum((score_ok)::int),0)::int exact FROM predictions WHERE settled_at IS NOT NULL`);
+  const conf = await sql(`SELECT lower(confidence) c, count(*)::int n, sum((outcome_ok)::int)::int ok FROM predictions WHERE settled_at IS NOT NULL GROUP BY 1 ORDER BY 1`);
+  const upcoming = await sql(`SELECT * FROM predictions WHERE settled_at IS NULL ORDER BY match_ts ASC LIMIT 40`);
+  const settled = await sql(`SELECT * FROM predictions WHERE settled_at IS NOT NULL ORDER BY match_ts DESC LIMIT 40`);
+  return { summary: sum, byConfidence: conf, upcoming, settled };
+}
+
 // ---------- analiza AI na danych z Flashscore (wszystko z danych sezonu – 0 dodatkowych zapytań) ----------
 function recOf(ms, id, home) {
   const r = { M: 0, Z: 0, R: 0, P: 0, gz: 0, gs: 0 };
@@ -624,12 +762,19 @@ async function analysisFS(tid, P = "fs-") {
     przeciwnik: next && { tabela: trow(oppRow), forma_ostatnie_mecze: fmt(oppForm), statystyki_sezonu: oppStats },
     mecze_bezposrednie_w_sezonie: next ? h2h : undefined,
   };
+  if (P === "tm-") { // kadra, wartości rynkowe, kontuzje/zawieszenia i strzelcy z Transfermarkt (max 35 s oczekiwania)
+    const oppId = nextM && (nextM.home_team.team_id === tid ? nextM.away_team.team_id : nextM.home_team.team_id);
+    const [own, opp] = await Promise.all([withDeadline(tmTeam(tid, season), 35000), oppId ? withDeadline(tmTeam(oppId, season), 35000) : null]);
+    ctx.kadra = teamCtx(own);
+    if (ctx.przeciwnik) ctx.przeciwnik.kadra = teamCtx(opp);
+  }
   analysisLog.push(t0);
   const { parsed, text } = await askAi(ctx, next, row.team.name);
   const v = { team: { id: P + tid, name: row.team.name }, table: trow(row), form, next, stats,
     lastMatch: null, // Flashscore i Transfermarkt nie udostępniają heatmap
     ai: parsed, raw: parsed ? undefined : text, model: NV_MODEL, generatedAt: Date.now(), note: seasonNote(season) };
   analysisCache.set(key, { t: Date.now(), v });
+  if (P === "tm-") savePrediction(nextM, parsed).catch((e) => console.error("zapis prognozy:", e.message));
   return v;
 }
 
@@ -652,6 +797,8 @@ async function route(p) {
   if (p === "/api/status") {
     return { status: 200, data: { transfermarkt: { ok: Date.now() >= tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null } };
   }
+  if (p === "/api/predictions") return { status: 200, data: await predictionsReport() };
+  if ((m = p.match(/^\/api\/team\/tm-(\d+)$/))) return { status: 200, data: await teamPage(m[1]) };
   if (p === "/api/table") {
     return withFs(async () => {
       const s = await anySeason();

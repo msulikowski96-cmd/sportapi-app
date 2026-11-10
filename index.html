@@ -51,6 +51,12 @@
   .prob div { display:grid; place-items:center; color:#fff; min-width:0; } .prob .h { background:#2563eb; } .prob .d { background:#6b7280; } .prob .a { background:#e11d48; }
   .probl { display:flex; justify-content:space-between; font-size:12px; color:var(--mut); }
   .disc { color:var(--mut); font-size:12px; margin-top:14px; }
+  tr.click { cursor:pointer; } tr.click:hover td.t { color:var(--acc); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; } @media (max-width:560px){ .grid2 { grid-template-columns:1fr; } }
+  .kpi { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px 12px; } .kpi b { display:block; font-size:22px; }
+  .pl { display:grid; grid-template-columns:28px 1fr auto; gap:6px; font-size:13px; padding:3px 0; border-top:1px solid var(--line); } .pl .v { color:var(--mut); }
+  .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:6px; background:#7f1d1d; color:#fecaca; margin-right:6px; } .tag.s { background:#78350f; color:#fde68a; }
+  .ok { color:var(--ok); } .bad { color:var(--live); }
   canvas.pitch { width:100%; height:auto; border-radius:8px; margin-top:10px; display:block; }
 </style>
 </head>
@@ -61,7 +67,9 @@
     <button data-v="live" class="on">🔴 Na żywo</button>
     <button data-v="round">Kolejki</button>
     <button data-v="table">Tabela</button>
+    <button data-v="teams">🏟 Drużyny</button>
     <button data-v="ai">🤖 Analiza AI</button>
+    <button data-v="pred">📈 Trafność</button>
   </nav>
 </header>
 <main id="app"></main>
@@ -154,11 +162,12 @@ async function showTable() {
     const zone = (r) => r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
     app.innerHTML = note(tb) + `<div class="panel" style="padding:8px 10px"><table>
       <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
-      ${rows.map((r) => `<tr class="${zone(r)}"><td class="pos">${r.position}</td><td class="t">${esc(r.team.name)}</td>
+      ${rows.map((r) => `<tr class="${zone(r)} ${String(r.team.id).startsWith("tm-") ? "click" : ""}" data-tid="${r.team.id}"><td class="pos">${r.position}</td><td class="t">${esc(r.team.name)}</td>
         <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
         <td>${r.scoresFor}:${r.scoresAgainst}</td><td class="pts">${r.points}</td></tr>`).join("")}
     </table></div>
-    <p class="mut" style="font-size:12px">Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa</p>`;
+    <p class="mut" style="font-size:12px">Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · kliknij drużynę, by zobaczyć jej stronę</p>`;
+    document.querySelectorAll("tr.click").forEach((tr) => tr.onclick = () => openTeam(tr.dataset.tid));
   } catch (e) { fail(e); }
 }
 
@@ -294,12 +303,71 @@ async function drawHeat(eventId, playerId) {
   } catch (e) { c.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
+// ---------- Drużyny ----------
+const mlnE = (v) => v == null ? "–" : v >= 1e6 ? (Math.round(v / 1e5) / 10) + " mln €" : Math.round(v / 1e3) + " tys. €";
+async function showTeams() {
+  loading();
+  try {
+    const rows = (await api("/api/table")).standings[0].rows.filter((r) => String(r.team.id).startsWith("tm-"));
+    if (!rows.length) { app.innerHTML = `<p class="mut">Strony drużyn są dostępne, gdy działa źródło Transfermarkt.</p>`; return; }
+    app.innerHTML = rows.map((r) => `<div class="m" data-tid="${r.team.id}" style="grid-template-columns:30px 1fr auto"><div class="tm">${r.position}.</div><div>${esc(r.team.name)}</div><div class="sc">${r.points} pkt</div></div>`).join("");
+    document.querySelectorAll(".m").forEach((el) => el.onclick = () => openTeam(el.dataset.tid));
+  } catch (e) { fail(e); }
+}
+async function openTeam(id) {
+  view = "teams"; clearInterval(timer); timer = null;
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === "teams"));
+  loading("Ładowanie drużyny… (pierwsze wejście może potrwać kilka sekund)"); window.scrollTo({ top: 0 });
+  try {
+    const d = await api(`/api/team/${id}`), t = d.table;
+    const groups = {}; for (const p of d.squad) (groups[p.position] ||= []).push(p);
+    const order = ["Bramkarze", "Obrońcy", "Pomocnicy", "Napastnicy", "Inni"];
+    let h = note(d) + `<button class="btn back" id="bk">‹ Wróć</button><div class="panel">
+      <div style="font-size:20px;font-weight:700">${esc(d.team.name)}</div>
+      <div class="mut" style="font-size:13px;margin-top:4px">${t.position}. miejsce · ${t.points} pkt · ${t.matches} mecze · bilans ${t.wins}-${t.draws}-${t.losses} · bramki ${t.scoresFor}:${t.scoresAgainst}</div>
+      <div class="mut" style="font-size:13px;margin-top:2px">${[d.coach && "Trener: " + esc(d.coach), d.stadium?.name && "Stadion: " + esc(d.stadium.name) + (d.stadium.capacity ? " (" + d.stadium.capacity.toLocaleString("pl-PL") + " miejsc)" : ""), "Wartość kadry: " + mlnE(d.squadValue)].filter(Boolean).join(" · ")}</div>
+      <h3>Forma (od najstarszego)</h3><div class="chips">${[...d.form].reverse().map((m) => `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div>
+      <div class="mut" style="font-size:12px">${[...d.form].reverse().map((m) => `${m.home ? "d" : "w"} ${esc(m.opponent)} ${m.gf}:${m.ga}`).join(" · ")}</div>`;
+    if (d.next) h += `<div class="nm">Następny mecz: <b>${d.next.home ? esc(d.team.name) : esc(d.next.opponent)} – ${d.next.home ? esc(d.next.opponent) : esc(d.team.name)}</b><br>
+      <span class="mut">kolejka ${d.next.round ?? "?"} · ${esc(fmtDay(d.next.date))} ${fmtTime(d.next.date)}</span>
+      ${d.h2h.length ? `<br><span class="mut">W tym sezonie: ${d.h2h.map(esc).join("; ")}</span>` : `<br><span class="mut">W tym sezonie jeszcze się nie spotkały.</span>`}</div>`;
+    h += `<button class="btn" id="aiq">🤖 Analiza AI tej drużyny</button>`;
+    if (d.unavailable.length) h += `<h3>Niedostępni</h3>` + d.unavailable.map((u) => `<div style="font-size:14px;padding:3px 0"><span class="tag ${u.type === "zawieszenie" ? "s" : ""}">${u.type}</span>${esc(u.name)} <span class="mut">– ${esc(u.reason)}${u.until ? ", do " + esc(u.until) : ", brak daty powrotu"}</span></div>`).join("");
+    if (d.scorers.length) h += `<h3>Strzelcy w lidze</h3>` + d.scorers.map((s) => `<div class="pl" style="grid-template-columns:1fr auto"><div>${esc(s.name)}</div><div class="v">${s.goals} goli · ${s.assists} asyst</div></div>`).join("");
+    for (const g of order) if (groups[g]) h += `<h3>${g}</h3>` + groups[g].map((p) => `<div class="pl"><div class="mut">${p.shirt ?? ""}</div><div>${esc(p.name)}${p.captain ? " ©" : ""} <span class="mut">${esc(p.age ? p.age + " l." : "")}</span></div><div class="v">${mlnE(p.value)}</div></div>`).join("");
+    app.innerHTML = h + `</div><p class="mut" style="font-size:12px">Źródło: Transfermarkt (wartości rynkowe, kontuzje i zawieszenia sprawdzane dla 22 najcenniejszych zawodników).</p>`;
+    $("#bk").onclick = () => go("teams");
+    $("#aiq").onclick = () => { anTeam = id; go("ai"); setTimeout(() => $("#an") && runAnalysis(id), 50); };
+  } catch (e) { fail(e); }
+}
+
+// ---------- Trafność typów AI ----------
+async function showPred() {
+  loading();
+  try {
+    const d = await api("/api/predictions"), s = d.summary, pct = (a, b) => b ? Math.round((a / b) * 100) + "%" : "–";
+    const pk = { "1": "gospodarz", X: "remis", "2": "gość" };
+    const row = (r, done) => `<div class="m" style="grid-template-columns:1fr auto;cursor:default">
+      <div><div>${esc(r.home_name)} – ${esc(r.away_name)}</div><div class="mut" style="font-size:12px">kolejka ${r.round ?? "?"} · typ: ${pk[r.pick]} (${r.p_home}% / ${r.p_draw}% / ${r.p_away}%) · wynik ${esc(r.score_pred || "–")} · pewność: ${esc(r.confidence || "–")}</div></div>
+      <div class="sc">${done ? `<div>${r.actual_home}:${r.actual_away}</div><div class="${r.outcome_ok ? "ok" : "bad"}">${r.outcome_ok ? "✓" : "✗"}${r.score_ok ? " ★" : ""}</div>` : `<div class="mut" style="font-weight:400;font-size:12px">${esc(fmtDay(r.match_ts))}</div>`}</div></div>`;
+    app.innerHTML = `<div class="grid2"><div class="kpi"><span class="mut">Rozliczone typy</span><b>${s.n}</b></div>
+      <div class="kpi"><span class="mut">Trafny zwycięzca / remis</span><b>${s.ok}/${s.n} · ${pct(s.ok, s.n)}</b></div>
+      <div class="kpi"><span class="mut">Trafiony dokładny wynik ★</span><b>${s.exact}/${s.n} · ${pct(s.exact, s.n)}</b></div>
+      <div class="kpi"><span class="mut">Wg pewności modelu</span><div style="font-size:13px;margin-top:4px">${d.byConfidence.length ? d.byConfidence.map((c) => `${esc(c.c || "?")}: ${c.ok}/${c.n}`).join("<br>") : "–"}</div></div></div>
+      <h3>Nadchodzące typy</h3>${d.upcoming.length ? d.upcoming.map((r) => row(r, false)).join("") : `<p class="mut">Brak. Wygeneruj analizę drużyny w zakładce „Analiza AI” – typ następnego meczu zapisze się tu automatycznie.</p>`}
+      <h3>Rozliczone</h3>${d.settled.length ? d.settled.map((r) => row(r, true)).join("") : `<p class="mut">Typy rozliczą się automatycznie po zakończeniu meczów.</p>`}
+      <p class="mut" style="font-size:12px">Typ = najbardziej prawdopodobny wynik 1/X/2 z prognozy modelu. Zapisuje się ostatnia prognoza sprzed meczu.</p>`;
+  } catch (e) { fail(e); }
+}
+
 function go(v) {
   view = v; clearInterval(timer); timer = null;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
   if (v === "live") showLive();
   else if (v === "round") showRound();
   else if (v === "ai") showAnalysis();
+  else if (v === "teams") showTeams();
+  else if (v === "pred") showPred();
   else showTable();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));

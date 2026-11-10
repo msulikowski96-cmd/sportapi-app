@@ -50,33 +50,6 @@ async function seasonId() {
 
 // ---------- analiza AI ----------
 const league = (e) => e.tournament?.uniqueTournament?.id === TOURNAMENT;
-function formOf(events, id, n = 6) {
-  return events
-    .filter((e) => e.status?.type === "finished" && league(e))
-    .sort((a, b) => b.startTimestamp - a.startTimestamp)
-    .slice(0, n)
-    .map((e) => {
-      const home = e.homeTeam.id === id;
-      const gf = home ? e.homeScore?.current : e.awayScore?.current;
-      const ga = home ? e.awayScore?.current : e.homeScore?.current;
-      return {
-        eventId: e.id, date: new Date(e.startTimestamp * 1000).toISOString().slice(0, 10),
-        opponent: home ? e.awayTeam.name : e.homeTeam.name, home, gf, ga,
-        res: gf > ga ? "Z" : gf < ga ? "P" : "R",
-        homeTeamId: e.homeTeam.id, awayTeamId: e.awayTeam.id,
-      };
-    });
-}
-const STAT_KEYS = ["matches", "goalsScored", "goalsConceded", "assists", "shots", "shotsOnTarget", "bigChancesCreated",
-  "bigChancesMissed", "averageBallPossession", "accuratePassesPercentage", "cleanSheets", "corners", "fouls",
-  "yellowCards", "redCards", "interceptions", "tackles", "duelsWonPercentage", "goalsFromInsideTheBox", "goalsFromOutsideTheBox"];
-function pickStats(s) {
-  const out = {};
-  for (const k of STAT_KEYS) if (typeof s?.[k] === "number") out[k] = Math.round(s[k] * 100) / 100;
-  if (!Object.keys(out).length) for (const [k, v] of Object.entries(s || {}).slice(0, 25)) if (typeof v === "number") out[k] = v;
-  return out;
-}
-
 async function nvidia(messages) {
   if (!NV_KEY) throw new HttpErr(500, "Brak zmiennej środowiskowej NVIDIA_API_KEY");
   const r = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
@@ -98,77 +71,8 @@ function parseJson(text) {
   try { return JSON.parse(text.slice(a, b + 1)); } catch { return null; }
 }
 
-async function askAi(ctx, next, teamName) {
-  const system = "Jesteś analitykiem piłkarskim polskiej Ekstraklasy. Opierasz się WYŁĄCZNIE na dostarczonych danych " +
-    "(nie wymyślaj kontuzji, transferów ani innych faktów, których tam nie ma). Piszesz po polsku, rzeczowo. " +
-    "Jeśli w danych są niedostępni zawodnicy (kontuzje, zawieszenia), wartości rynkowe lub najlepsi strzelcy – uwzględnij je w ocenie. " +
-    "Zwracasz wyłącznie jeden obiekt JSON, bez komentarza i bez markdown.";
-  const user = `Dane:\n${JSON.stringify(ctx, null, 1)}\n\nZwróć JSON o dokładnie takim schemacie:\n` +
-    `{"podsumowanie_formy":"2-3 zdania o bieżącej formie","mocne_strony":["..","..",".."],"slabe_strony":["..","..",".."],` +
-    `"kluczowe_czynniki":["..","..",".."],` +
-    `"prognoza":${next ? `{"wygrana_gospodarzy":0,"remis":0,"wygrana_gosci":0,"typowany_wynik":"gospodarz:gość","pewnosc":"niska|średnia|wysoka","uzasadnienie":"2-3 zdania"}` : "null"}}\n` +
-    (next ? `Procenty mają sumować się do 100. Typowany wynik podaj w kolejności gospodarz:gość (gospodarzem jest ${next.home ? teamName : next.opponent}).` : "Brak zaplanowanego meczu – ustaw prognozę na null.");
-
-  const text = await nvidia([{ role: "system", content: system }, { role: "user", content: user }]);
-  const parsed = parseJson(text);
-  return { parsed, text };
-}
-
 const analysisCache = new Map();
 let analysisLog = []; // prosty limit: max 20 nowych analiz na godzinę (ochrona kluczy)
-
-async function analysis(teamId) {
-  const S = await seasonId();
-  const tab = must(await callApi(`/api/v1/unique-tournament/${TOURNAMENT}/season/${S}/standings/total`, 600000));
-  const rows = tab.standings[0].rows;
-  const row = rows.find((r) => r.team.id === teamId);
-  if (!row) throw new HttpErr(404, "Nie znaleziono drużyny w tabeli Ekstraklasy");
-
-  const lastEv = must(await callApi(`/api/v1/team/${teamId}/events/last/0`, 600000)).events || [];
-  const nextEv = (must(await callApi(`/api/v1/team/${teamId}/events/next/0`, 600000)).events || [])
-    .filter((e) => league(e) && e.status?.type === "notstarted")
-    .sort((a, b) => a.startTimestamp - b.startTimestamp)[0];
-
-  const key = `${teamId}:${nextEv?.id || 0}:${row.matches}`;
-  const hit = analysisCache.get(key);
-  if (hit && Date.now() - hit.t < 3 * 3600 * 1000) return hit.v;
-
-  const now = Date.now();
-  analysisLog = analysisLog.filter((t) => now - t < 3600 * 1000);
-  if (analysisLog.length >= 20) throw new HttpErr(429, "Limit 20 analiz na godzinę został osiągnięty. Spróbuj później.");
-
-  const stats = pickStats(must(await callApi(`/api/v1/team/${teamId}/unique-tournament/${TOURNAMENT}/season/${S}/statistics/overall`, 6 * 3600 * 1000)).statistics);
-  const form = formOf(lastEv, teamId);
-
-  let next = null, oppRow = null, oppForm = [];
-  if (nextEv) {
-    const home = nextEv.homeTeam.id === teamId;
-    const opp = home ? nextEv.awayTeam : nextEv.homeTeam;
-    oppRow = rows.find((r) => r.team.id === opp.id);
-    const oppLast = must(await callApi(`/api/v1/team/${opp.id}/events/last/0`, 600000)).events || [];
-    oppForm = formOf(oppLast, opp.id);
-    next = { eventId: nextEv.id, home, opponent: opp.name, round: nextEv.roundInfo?.round, date: nextEv.startTimestamp };
-  }
-
-  const trow = (r) => r && { miejsce: r.position, mecze: r.matches, zwyciestwa: r.wins, remisy: r.draws, porazki: r.losses, bramki: `${r.scoresFor}:${r.scoresAgainst}`, punkty: r.points };
-  const fmt = (f) => f.map((m) => `${m.date} ${m.home ? "(d)" : "(w)"} ${m.opponent} ${m.gf}:${m.ga} [${m.res}]`);
-  const ctx = {
-    druzyna: row.team.name, tabela: trow(row), forma_ostatnie_mecze: fmt(form), statystyki_sezonu: stats,
-    nastepny_mecz: next && { przeciwnik: next.opponent, grasz: next.home ? "u siebie" : "na wyjeździe", kolejka: next.round },
-    przeciwnik: next && { tabela: trow(oppRow), forma_ostatnie_mecze: fmt(oppForm) },
-  };
-
-  analysisLog.push(now);
-  const { parsed, text } = await askAi(ctx, next, row.team.name);
-
-  const v = {
-    team: { id: teamId, name: row.team.name }, table: trow(row), form, next, stats,
-    lastMatch: form[0] ? { id: form[0].eventId, homeTeamId: form[0].homeTeamId, awayTeamId: form[0].awayTeamId } : null,
-    ai: parsed, raw: parsed ? undefined : text, model: NV_MODEL, generatedAt: Date.now(),
-  };
-  analysisCache.set(key, { t: Date.now(), v });
-  return v;
-}
 
 // ---------- API-Football: opcja zastępcza ----------
 // Darmowy plan: 100 zapytań/dzień, dane tylko z okna wczoraj–dziś–jutro (bez tabeli i sezonu 26/27).
@@ -666,136 +570,11 @@ async function teamPage(clubId) {
       .map((m) => `${m.home_team.name} ${m.home}:${m.away} ${m.away_team.name} (${m.round})`);
     next = { eventId: P + nextM.match_id, home, opponent: opp.name, opponentId: P + opp.team_id, round: roundNo(nextM.round), date: nextM.timestamp };
   }
+  ensureGames(season);
   const info = await tmTeam(clubId, season);
-  return { team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
+  const profile = GAMES.running ? null : leagueProfiles(season).teams.find((t) => t.id === P + clubId) || null;
+  return { profile, profileProgress: { done: GAMES.done, total: GAMES.total }, team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
     stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, note: seasonNote(season) };
-}
-
-// ---------- baza prognoz (Neon Postgres przez HTTP, bez zależności) ----------
-const DB_URL = process.env.DATABASE_URL;
-async function sql(query, params = []) {
-  if (!DB_URL) throw new HttpErr(503, "Brak zmiennej środowiskowej DATABASE_URL (śledzenie typów wyłączone)");
-  const r = await fetch(`https://${new URL(DB_URL).host}/sql`, { method: "POST", headers: { "Neon-Connection-String": DB_URL, "Content-Type": "application/json" },
-    body: JSON.stringify({ query, params }), signal: AbortSignal.timeout(20000) });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new HttpErr(502, `Baza danych: ${d.message || r.status}`);
-  return d.rows || [];
-}
-const scoreOf = (t) => { const m = String(t || "").match(/(\d+)\s*[:\-–]\s*(\d+)/); return m ? `${Number(m[1])}:${Number(m[2])}` : null; };
-const r1 = (x) => Math.round(x * 1000) / 10; // 0.4567 -> 45.7
-
-// ---------- model statystyczny (Poisson, siła ataku/obrony ze zwężeniem do średniej ligi) ----------
-function poissonPmf(l, n = 10) { const p = [Math.exp(-l)]; for (let k = 1; k < n; k++) p.push(p[k - 1] * l / k); return p; }
-function statPredict(fin, homeId, awayId, K = 4) {
-  const ms = fin.filter((m) => m.home != null);
-  if (ms.length < 20) return null;
-  const avgH = ms.reduce((a, m) => a + m.home, 0) / ms.length, avgA = ms.reduce((a, m) => a + m.away, 0) / ms.length, avg = (avgH + avgA) / 2;
-  const rate = (id) => { let n = 0, gf = 0, ga = 0;
-    for (const m of ms) { const h = m.home_team.team_id === id; if (!h && m.away_team.team_id !== id) continue; n++; gf += h ? m.home : m.away; ga += h ? m.away : m.home; }
-    return { att: (gf + K * avg) / (n + K) / avg, def: (ga + K * avg) / (n + K) / avg, n }; };
-  const H = rate(homeId), A = rate(awayId);
-  const lamH = avgH * H.att * A.def, lamA = avgA * A.att * H.def;
-  const ph = poissonPmf(lamH), pa = poissonPmf(lamA);
-  let p1 = 0, pX = 0, p2 = 0, best = [0, 0, -1];
-  for (let i = 0; i < ph.length; i++) for (let j = 0; j < pa.length; j++) { const p = ph[i] * pa[j];
-    if (i > j) p1 += p; else if (i < j) p2 += p; else pX += p; if (p > best[2]) best = [i, j, p]; }
-  const t = p1 + pX + p2; p1 /= t; pX /= t; p2 /= t;
-  return { p: [p1, pX, p2], pick: p1 >= pX && p1 >= p2 ? "1" : p2 >= pX ? "2" : "X", score: `${best[0]}:${best[1]}`, lamH, lamA };
-}
-const outcomeOf = (h, a) => (h > a ? "1" : h < a ? "2" : "X");
-const brier = (p, o) => [p[0] - (o === "1" ? 1 : 0), p[1] - (o === "X" ? 1 : 0), p[2] - (o === "2" ? 1 : 0)].reduce((s, d) => s + d * d, 0);
-let backtestMemo = null;
-function statBacktest(season) { // walk-forward: każdy mecz przewidywany wyłącznie na podstawie wcześniejszych
-  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null).sort((a, b) => a.timestamp - b.timestamp);
-  if (backtestMemo?.n0 === fin.length) return backtestMemo.v;
-  let n = 0, ok = 0, exact = 0, bm = 0, bBase = 0, bHome = 0, homeWins = 0;
-  const freq = [0, 0, 0];
-  fin.forEach((m) => { freq[["1", "X", "2"].indexOf(outcomeOf(m.home, m.away))]++; });
-  const tot = freq.reduce((a, b) => a + b, 0) || 1, fq = freq.map((x) => x / tot);
-  for (let i = 0; i < fin.length; i++) {
-    const m = fin[i], pr = statPredict(fin.slice(0, i), m.home_team.team_id, m.away_team.team_id); if (!pr) continue;
-    const o = outcomeOf(m.home, m.away); n++; if (pr.pick === o) ok++; if (pr.score === `${m.home}:${m.away}`) exact++;
-    bm += brier(pr.p, o); bBase += brier(fq, o); if (o === "1") homeWins++;
-  }
-  const v = n ? { mecze: n, trafione_wyniki_proc: r1(ok / n), trafione_dokladne_proc: r1(exact / n), brier: Math.round((bm / n) * 1000) / 1000,
-    brier_srednia_ligi: Math.round((bBase / n) * 1000) / 1000, zawsze_gospodarz_proc: r1(homeWins / n) } : null;
-  backtestMemo = { n0: fin.length, v }; return v;
-}
-const blend = (a, b) => { const p = a.map((x, i) => (x + b[i]) / 2); return { p, pick: p[0] >= p[1] && p[0] >= p[2] ? "1" : p[2] >= p[1] ? "2" : "X" }; };
-
-// ---------- baza: schemat + zapis prognoz ----------
-let schemaReady = null;
-function ensureSchema() {
-  if (!DB_URL) return Promise.resolve();
-  return (schemaReady ||= (async () => {
-    for (const c of ["p_home", "p_draw", "p_away", "pick"]) await sql(`ALTER TABLE predictions ALTER COLUMN ${c} DROP NOT NULL`).catch(() => {});
-    await sql(`ALTER TABLE predictions
-      ADD COLUMN IF NOT EXISTS s_home real, ADD COLUMN IF NOT EXISTS s_draw real, ADD COLUMN IF NOT EXISTS s_away real, ADD COLUMN IF NOT EXISTS s_pick text,
-      ADD COLUMN IF NOT EXISTS s_score text, ADD COLUMN IF NOT EXISTS s_lam_h real, ADD COLUMN IF NOT EXISTS s_lam_a real,
-      ADD COLUMN IF NOT EXISTS b_home real, ADD COLUMN IF NOT EXISTS b_draw real, ADD COLUMN IF NOT EXISTS b_away real, ADD COLUMN IF NOT EXISTS b_pick text,
-      ADD COLUMN IF NOT EXISTS s_ok boolean, ADD COLUMN IF NOT EXISTS b_ok boolean, ADD COLUMN IF NOT EXISTS ai_at timestamptz`);
-  })().catch((e) => { schemaReady = null; throw e; }));
-}
-const futureOpen = "predictions.settled_at IS NULL AND predictions.match_ts > extract(epoch from now())";
-async function saveStat(m, season) { // typ statystyczny dla przyszłego meczu (bez AI, bez limitów)
-  if (!DB_URL || !m || m.timestamp * 1000 <= Date.now()) return false;
-  const fin = season.matches.filter((x) => x.status === "finished" && x.home != null);
-  const st = statPredict(fin, m.home_team.team_id, m.away_team.team_id); if (!st) return false;
-  await ensureSchema();
-  await sql(`INSERT INTO predictions (match_id, round, match_ts, home_id, home_name, away_id, away_name, s_home, s_draw, s_away, s_pick, s_score, s_lam_h, s_lam_a)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    ON CONFLICT (match_id) DO UPDATE SET round=$2, match_ts=$3, s_home=$8, s_draw=$9, s_away=$10, s_pick=$11, s_score=$12, s_lam_h=$13, s_lam_a=$14
-    WHERE ${futureOpen}`,
-    [m.match_id, roundNo(m.round), m.timestamp, m.home_team.team_id, m.home_team.name, m.away_team.team_id, m.away_team.name,
-      r1(st.p[0]), r1(st.p[1]), r1(st.p[2]), st.pick, st.score, Math.round(st.lamH * 100) / 100, Math.round(st.lamA * 100) / 100]);
-  return true;
-}
-async function savePrediction(nextM, ai, season) {
-  const p = ai?.prognoza;
-  if (!DB_URL || !p || !nextM || nextM.timestamp * 1000 <= Date.now()) return;
-  const w = [p.wygrana_gospodarzy, p.remis, p.wygrana_gosci].map((x) => Math.max(0, Number(x) || 0)), sum = w[0] + w[1] + w[2];
-  if (!sum) return;
-  const pr = w.map((x) => Math.round((x / sum) * 1000) / 10), pick = pr[0] >= pr[1] && pr[0] >= pr[2] ? "1" : pr[2] >= pr[1] ? "2" : "X";
-  await saveStat(nextM, season).catch((e) => console.error("typ statystyczny:", e.message));
-  await ensureSchema();
-  const fin = season.matches.filter((x) => x.status === "finished" && x.home != null);
-  const st = statPredict(fin, nextM.home_team.team_id, nextM.away_team.team_id);
-  const bl = st && blend(pr.map((x) => x / 100), st.p);
-  await sql(`INSERT INTO predictions (match_id, round, match_ts, home_id, home_name, away_id, away_name, p_home, p_draw, p_away, pick, score_pred, confidence, model, b_home, b_draw, b_away, b_pick, ai_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
-    ON CONFLICT (match_id) DO UPDATE SET round=$2, match_ts=$3, p_home=$8, p_draw=$9, p_away=$10, pick=$11, score_pred=$12, confidence=$13, model=$14,
-      b_home=$15, b_draw=$16, b_away=$17, b_pick=$18, ai_at=now(), created_at=now()
-    WHERE ${futureOpen}`,
-    [nextM.match_id, roundNo(nextM.round), nextM.timestamp, nextM.home_team.team_id, nextM.home_team.name, nextM.away_team.team_id, nextM.away_team.name,
-      pr[0], pr[1], pr[2], pick, scoreOf(p.typowany_wynik), String(p.pewnosc || ""), NV_MODEL,
-      bl ? r1(bl.p[0]) : null, bl ? r1(bl.p[1]) : null, bl ? r1(bl.p[2]) : null, bl ? bl.pick : null]);
-}
-async function settleOpen(season) { // rozliczenie meczów, które się zakończyły
-  const open = await sql("SELECT match_id, pick, score_pred, s_pick, b_pick FROM predictions WHERE settled_at IS NULL AND match_ts < $1", [Math.floor(Date.now() / 1000) - 3600]);
-  for (const r of open) {
-    const m = season.matches.find((x) => x.match_id === r.match_id);
-    if (!m || m.status !== "finished" || m.home == null) continue;
-    const out = outcomeOf(m.home, m.away);
-    await sql("UPDATE predictions SET actual_home=$2, actual_away=$3, outcome_ok=$4, score_ok=$5, s_ok=$6, b_ok=$7, settled_at=now() WHERE match_id=$1",
-      [r.match_id, m.home, m.away, r.pick ? out === r.pick : null, r.score_pred ? scoreOf(r.score_pred) === `${m.home}:${m.away}` : null,
-        r.s_pick ? out === r.s_pick : null, r.b_pick ? out === r.b_pick : null]);
-  }
-}
-async function predictionsReport() {
-  await ensureSchema();
-  const season = await tmSeason().catch(() => null);
-  if (season) await settleOpen(season);
-  const all = await sql(`SELECT * FROM predictions WHERE settled_at IS NOT NULL ORDER BY match_ts DESC`);
-  const agg = (pick, pk, okk) => { const rows = all.filter((r) => r[pick] && r[okk] != null); let bs = 0;
-    for (const r of rows) bs += brier(pk(r).map((x) => x / 100), outcomeOf(r.actual_home, r.actual_away));
-    const ok = rows.filter((r) => r[okk]).length; return { n: rows.length, ok, brier: rows.length ? Math.round((bs / rows.length) * 1000) / 1000 : null }; };
-  const models = { ai: agg("pick", (r) => [r.p_home, r.p_draw, r.p_away], "outcome_ok"), stat: agg("s_pick", (r) => [r.s_home, r.s_draw, r.s_away], "s_ok"),
-    blend: agg("b_pick", (r) => [r.b_home, r.b_draw, r.b_away], "b_ok") };
-  const aiRows = all.filter((r) => r.pick);
-  const summary = { n: aiRows.length, ok: aiRows.filter((r) => r.outcome_ok).length, exact: aiRows.filter((r) => r.score_ok).length };
-  const byC = {}; for (const r of aiRows) { const c = String(r.confidence || "").toLowerCase(); (byC[c] ||= { c, n: 0, ok: 0 }); byC[c].n++; if (r.outcome_ok) byC[c].ok++; }
-  const upcoming = await sql(`SELECT * FROM predictions WHERE settled_at IS NULL ORDER BY match_ts ASC LIMIT 60`);
-  return { summary, models, byConfidence: Object.values(byC).sort((a, b) => a.c.localeCompare(b.c)), upcoming, settled: all.slice(0, 40), backtest: season ? statBacktest(season) : null };
 }
 
 // ---------- analiza AI na danych z Flashscore (wszystko z danych sezonu – 0 dodatkowych zapytań) ----------
@@ -822,58 +601,6 @@ function fsStats(ms, id) {
   const r2 = (x) => Math.round(x * 100) / 100;
   return { mecze: ms.length, srednia_goli_zdobytych: r2(gf / n), srednia_goli_straconych: r2(ga / n), czyste_konta: cs, mecze_z_golami_obu_druzyn: btts, mecze_powyzej_2_5_gola: o25,
     u_siebie: recOf(ms, id, true), na_wyjezdzie: recOf(ms, id, false) };
-}
-
-async function analysisFS(tid, P = "fs-", matchId = null) {
-  const season = P === "tm-" ? await tmSeason() : await fsSeason();
-  const rows = P === "tm-" ? await tmTable(season) : await fsTable(season);
-  const row = rows.find((r) => r.team.id === P + tid);
-  if (!row) throw new HttpErr(404, "Nie znaleziono drużyny w tabeli Ekstraklasy");
-  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null).sort((a, b) => b.timestamp - a.timestamp);
-  const mine = (id) => fin.filter((m) => m.home_team.team_id === id || m.away_team.team_id === id);
-  const now = Date.now() / 1000;
-  const nextM = matchId ? season.matches.find((m) => m.match_id === matchId) : season.matches.filter((m) => (m.status === "notstarted" || m.status === "inprogress") && m.timestamp > now - 4 * 3600 &&
-    (m.home_team.team_id === tid || m.away_team.team_id === tid)).sort((a, b) => a.timestamp - b.timestamp)[0];
-
-  const key = `${P}${tid}:${nextM?.match_id || 0}:${row.matches}`;
-  const hit = analysisCache.get(key);
-  if (hit && Date.now() - hit.t < 3 * HOUR) return hit.v;
-  const t0 = Date.now();
-  analysisLog = analysisLog.filter((t) => t0 - t < HOUR);
-  if (analysisLog.length >= 20) throw new HttpErr(429, "Limit 20 analiz na godzinę został osiągnięty. Spróbuj później.");
-
-  const form = fsFormOf(mine(tid), tid), stats = fsStats(mine(tid), tid);
-  let next = null, oppRow = null, oppForm = [], oppStats = null, h2h = [];
-  if (nextM) {
-    const home = nextM.home_team.team_id === tid, oppT = home ? nextM.away_team : nextM.home_team;
-    oppRow = rows.find((r) => r.team.id === P + oppT.team_id);
-    oppForm = fsFormOf(mine(oppT.team_id), oppT.team_id); oppStats = fsStats(mine(oppT.team_id), oppT.team_id);
-    h2h = fin.filter((m) => [m.home_team.team_id, m.away_team.team_id].includes(tid) && [m.home_team.team_id, m.away_team.team_id].includes(oppT.team_id))
-      .map((m) => `${m.home_team.name} ${m.home}:${m.away} ${m.away_team.name} (${m.round})`);
-    next = { eventId: P + nextM.match_id, home, opponent: oppT.name, round: roundNo(nextM.round), date: nextM.timestamp };
-  }
-  const trow = (r) => r && { miejsce: r.position, mecze: r.matches, zwyciestwa: r.wins, remisy: r.draws, porazki: r.losses, bramki: `${r.scoresFor}:${r.scoresAgainst}`, punkty: r.points };
-  const fmt = (f) => f.map((m) => `${m.date} ${m.home ? "(d)" : "(w)"} ${m.opponent} ${m.gf}:${m.ga} [${m.res}]`);
-  const ctx = {
-    druzyna: row.team.name, tabela: trow(row), forma_ostatnie_mecze: fmt(form), statystyki_sezonu: stats,
-    nastepny_mecz: next && { przeciwnik: next.opponent, grasz: next.home ? "u siebie" : "na wyjeździe", kolejka: next.round },
-    przeciwnik: next && { tabela: trow(oppRow), forma_ostatnie_mecze: fmt(oppForm), statystyki_sezonu: oppStats },
-    mecze_bezposrednie_w_sezonie: next ? h2h : undefined,
-  };
-  if (P === "tm-") { // kadra, wartości rynkowe, kontuzje/zawieszenia i strzelcy z Transfermarkt (max 35 s oczekiwania)
-    const oppId = nextM && (nextM.home_team.team_id === tid ? nextM.away_team.team_id : nextM.home_team.team_id);
-    const [own, opp] = await Promise.all([withDeadline(tmTeam(tid, season), 35000), oppId ? withDeadline(tmTeam(oppId, season), 35000) : null]);
-    ctx.kadra = teamCtx(own);
-    if (ctx.przeciwnik) ctx.przeciwnik.kadra = teamCtx(opp);
-  }
-  analysisLog.push(t0);
-  const { parsed, text } = await askAi(ctx, next, row.team.name);
-  const v = { team: { id: P + tid, name: row.team.name }, table: trow(row), form, next, stats,
-    lastMatch: null, // Flashscore i Transfermarkt nie udostępniają heatmap
-    ai: parsed, raw: parsed ? undefined : text, model: NV_MODEL, generatedAt: Date.now(), note: seasonNote(season) };
-  analysisCache.set(key, { t: Date.now(), v });
-  if (P === "tm-") savePrediction(nextM, parsed, season).catch((e) => console.error("zapis prognozy:", e.message));
-  return v;
 }
 
 // ---------- tabele cząstkowe (dom / wyjazd / forma) ----------
@@ -933,7 +660,191 @@ async function leadersRoute() {
   return { ready: false, done: LD.done, total: LD.total || n };
 }
 
-// ---------- podgląd meczu przed startem ----------
+// ---------- dane meczowe: statystyki klubów, minuty i rodzaje goli ze wszystkich rozegranych meczów ----------
+const GAMES = { map: new Map(), running: null, done: 0, total: 0 };
+function slimGame(g) {
+  const side = (c) => { const ps = c?.lineup?.players || [], ages = ps.map((p) => p.ageAtGameDate).filter(Number.isFinite);
+    return { id: String(c?.clubId), tactic: c?.tactic?.tactic || null, st: c?.clubStatistics || {}, age: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null, value: c?.squadMarketValue?.value ?? null }; };
+  return { home: side(g.homeClub), away: side(g.awayClub), hs: g.score?.home, as: g.score?.away,
+    goals: (g.actions || []).filter((a) => a.type === "GOAL").map((a) => ({ min: a.minute || 0, add: a.addedTime || 0, club: String(a.clubId), kind: a.actionId })),
+    cards: (g.actions || []).filter((a) => a.type === "CARD").map((a) => ({ club: String(a.clubId), kind: a.actionId })) };
+}
+function ensureGames(season) {
+  const need = season.matches.filter((m) => m.status === "finished" && m.home != null && !GAMES.map.has(String(m.match_id)));
+  if (!need.length) return null;
+  if (GAMES.running) return GAMES.running;
+  GAMES.total = need.length; GAMES.done = 0;
+  GAMES.running = pool(need, 5, async (m) => {
+    try { const g = await tmCall(`/game/${m.match_id}`, 7 * 24 * HOUR); if (g) GAMES.map.set(String(m.match_id), slimGame(g)); } catch {}
+    GAMES.done++;
+  }).finally(() => { GAMES.running = null; });
+  return GAMES.running;
+}
+
+// ---------- profil gry drużyny ----------
+const PERIODS = ["1–15'", "16–30'", "31–45'", "46–60'", "61–75'", "76–90'"];
+const periodOf = (min) => (min <= 15 ? 0 : min <= 30 ? 1 : min <= 45 ? 2 : min <= 60 ? 3 : min <= 75 ? 4 : 5);
+// key, etykieta, grupa, format, wyżej=lepiej (null = cecha stylu, bez oceny), [mocna strona, słaba strona]
+const METRICS = [
+  ["gf", "Bramki zdobyte / mecz", "Atak", "n2", true, ["Najskuteczniejszy atak", "Mało bramek"]],
+  ["shots", "Strzały / mecz", "Atak", "n1", true, ["Dużo strzałów", "Rzadko strzela"]],
+  ["sotPct", "Celność strzałów", "Atak", "pct", true, ["Celne strzały", "Strzela niecelnie"]],
+  ["conv", "Skuteczność (gole / strzały)", "Atak", "pct", true, ["Zamienia okazje na gole", "Marnuje okazje"]],
+  ["corners", "Rzuty rożne / mecz", "Atak", "n1", true, ["Często zmusza rywala do rożnych", "Rzadko wymusza rożne"]],
+  ["ga", "Bramki stracone / mecz", "Obrona", "n2", false, ["Szczelna obrona", "Traci dużo bramek"]],
+  ["shotsAg", "Strzały rywali / mecz", "Obrona", "n1", false, ["Ogranicza strzały rywali", "Pozwala rywalom strzelać"]],
+  ["sotAg", "Celne strzały rywali / mecz", "Obrona", "n1", false, ["Rzadko zagrożona celnymi strzałami", "Dużo celnych strzałów rywali"]],
+  ["cs", "Mecze z czystym kontem", "Obrona", "pct", true, ["Często zachowuje czyste konto", "Rzadko zachowuje czyste konto"]],
+  ["tackleSucc", "Skuteczność odbiorów", "Obrona", "pct", true, ["Skuteczne w odbiorze", "Przegrywa pojedynki"]],
+  ["tackles", "Odbiory / mecz", "Obrona", "n1", null, []],
+  ["clearances", "Wybicia / mecz", "Obrona", "n1", null, []],
+  ["poss", "Posiadanie piłki", "Kontrola gry", "pct", null, []],
+  ["passes", "Podania / mecz", "Kontrola gry", "n0", null, []],
+  ["passAcc", "Celność podań", "Kontrola gry", "pct", true, ["Dokładne w rozegraniu", "Niedokładne podania"]],
+  ["offsides", "Spalone / mecz", "Kontrola gry", "n1", false, ["Rzadko łapie się na spalonym", "Często łapie się na spalonym"]],
+  ["fouls", "Faule / mecz", "Dyscyplina", "n1", false, ["Gra czysto", "Dużo fauli"]],
+  ["yellow", "Żółte kartki / mecz", "Dyscyplina", "n2", false, ["Mało kartek", "Dużo kartek"]],
+  ["late", "Bramki po 75. minucie (zdobyte)", "Charakter", "n0", true, ["Groźna w końcówkach", "Rzadko trafia w końcówkach"]],
+  ["lateAg", "Bramki po 75. minucie (stracone)", "Charakter", "n0", false, ["Pewna w końcówkach", "Traci bramki w końcówkach"]],
+  ["firstPts", "Punkty / mecz po zdobyciu pierwszego gola", "Charakter", "n2", true, ["Potrafi dowieźć prowadzenie", "Roztrwania prowadzenie"]],
+  ["behindPts", "Punkty / mecz po straconym pierwszym golu", "Charakter", "n2", true, ["Odrabia straty", "Po straconym golu rzadko punktuje"]],
+  ["homePpg", "Punkty / mecz u siebie", "Charakter", "n2", true, ["Twierdza na własnym stadionie", "Słabo punktuje u siebie"]],
+  ["awayPpg", "Punkty / mecz na wyjeździe", "Charakter", "n2", true, ["Groźna na wyjazdach", "Słabo punktuje na wyjazdach"]],
+  ["age", "Średni wiek wyjściowej jedenastki", "Skład", "n1", null, []],
+];
+const GT = { head: [203], pen: [204, 205], set: [207, 211], long: [209], counter: [208] };
+function rawProfile(season, id) {
+  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null && (m.home_team.team_id === id || m.away_team.team_id === id)).sort((a, b) => a.timestamp - b.timestamp);
+  const acc = { n: 0, ns: 0, goalsFor: 0, goalsAg: 0, gamesCS: 0 }, S = {}, add = (k, v) => { if (Number.isFinite(v)) { (S[k] ||= [0, 0]); S[k][0] += v; S[k][1]++; } };
+  const timing = { scored: Array(6).fill(0), conceded: Array(6).fill(0) }, types = { head: 0, pen: 0, set: 0, long: 0, counter: 0, own: 0, open: 0, total: 0 };
+  const forms = new Map(), ppg = { h: [0, 0], a: [0, 0] }, first = { sP: 0, sN: 0, cP: 0, cN: 0 }, ages = [];
+  let late = 0, lateAg = 0, withData = 0, value = null;
+  for (const m of fin) {
+    const home = m.home_team.team_id === id, gf = home ? m.home : m.away, ga = home ? m.away : m.home, pts = gf > ga ? 3 : gf === ga ? 1 : 0;
+    acc.n++; acc.goalsFor += gf; acc.goalsAg += ga; if (ga === 0) acc.gamesCS++;
+    const pp = home ? ppg.h : ppg.a; pp[0] += pts; pp[1]++;
+    const g = GAMES.map.get(String(m.match_id)); if (!g) continue;
+    withData++;
+    const me = home ? g.home : g.away, op = home ? g.away : g.home, st = me.st, os = op.st;
+    add("poss", st.gameStatistics?.possessionPercentage); add("passes", st.passingStatistics?.totalPasses);
+    if (st.passingStatistics?.totalPasses) { add("passAccN", st.passingStatistics.accuratePasses); add("passAccD", st.passingStatistics.totalPasses); }
+    add("shots", st.goalStatistics?.totalShotAttempts); add("sot", st.goalStatistics?.onTargetShotAttempts);
+    add("shotsAg", os.goalStatistics?.totalShotAttempts); add("sotAg", os.goalStatistics?.onTargetShotAttempts);
+    add("tackles", st.defensiveStatistics?.totalTackles); add("tackS", st.defensiveStatistics?.successfulTackles);
+    add("clearances", st.defensiveStatistics?.clearances); add("offsides", st.defensiveStatistics?.offsides);
+    add("corners", st.setPieceStatistics?.cornersTaken); add("fouls", st.penaltyStatistics?.freeKicksConcededFromFouls);
+    add("yellow", st.gameStatistics?.yellowCards);
+    if (me.tactic) forms.set(me.tactic, (forms.get(me.tactic) || 0) + 1);
+    if (me.age != null) ages.push(me.age); if (me.value) value = me.value;
+    const gl = g.goals.map((x) => ({ ...x, t: x.min + x.add / 100 })).sort((a, b) => a.t - b.t);
+    for (const x of gl) {
+      const mine = x.club === id; (mine ? timing.scored : timing.conceded)[periodOf(x.min)]++;
+      if (x.min > 75) { if (mine) late++; else lateAg++; }
+      if (mine) { types.total++; const k = Object.keys(GT).find((q) => GT[q].includes(x.kind)); if (x.kind === 206) { types.own++; } else if (k) types[k]++; else types.open++; }
+    }
+    if (gl[0]) { if (gl[0].club === id) { first.sP += pts; first.sN++; } else { first.cP += pts; first.cN++; } }
+  }
+  const avg = (k) => (S[k] ? S[k][0] / S[k][1] : null), ratio = (a, b) => (a != null && b ? a / b : null), per = (a, n) => (n ? a / n : null);
+  const sumOf = (k) => (S[k] ? S[k][0] : 0);
+  const v = {
+    gf: per(acc.goalsFor, acc.n), ga: per(acc.goalsAg, acc.n), cs: per(acc.gamesCS, acc.n) != null ? (acc.gamesCS / acc.n) * 100 : null,
+    shots: avg("shots"), sotPct: S.shots ? (sumOf("sot") / sumOf("shots")) * 100 : null, conv: S.shots ? (fin.filter((m) => GAMES.map.has(String(m.match_id))).reduce((a, m) => a + (m.home_team.team_id === id ? m.home : m.away), 0) / sumOf("shots")) * 100 : null,
+    corners: avg("corners"), shotsAg: avg("shotsAg"), sotAg: avg("sotAg"), tackles: avg("tackles"), tackleSucc: S.tackles ? (sumOf("tackS") / sumOf("tackles")) * 100 : null,
+    clearances: avg("clearances"), poss: avg("poss"), passes: avg("passes"), passAcc: S.passAccD ? (sumOf("passAccN") / sumOf("passAccD")) * 100 : null,
+    offsides: avg("offsides"), fouls: avg("fouls"), yellow: avg("yellow"), late, lateAg,
+    firstPts: first.sN >= 3 ? first.sP / first.sN : null, behindPts: first.cN >= 3 ? first.cP / first.cN : null,
+    homePpg: per(ppg.h[0], ppg.h[1]), awayPpg: per(ppg.a[0], ppg.a[1]), age: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null };
+  const gtot = types.total || 1;
+  return { v, withData, matches: acc.n, timing, types, typeShare: { head: types.head / gtot, set: types.set / gtot, pen: types.pen / gtot, long: types.long / gtot, counter: types.counter / gtot },
+    formations: [...forms.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })), value, first };
+}
+const fmtV = (f, x) => (x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10).replace(/\.0$/, "") : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2));
+let profMemo = null;
+function leagueProfiles(season) {
+  const key = `${season.matches.filter((m) => m.status === "finished").length}:${GAMES.map.size}`;
+  if (profMemo?.key === key) return profMemo.v;
+  const ids = [...new Set(season.matches.flatMap((m) => [m.home_team.team_id, m.away_team.team_id]))];
+  const names = new Map(season.matches.flatMap((m) => [[m.home_team.team_id, m.home_team.name], [m.away_team.team_id, m.away_team.name]]));
+  const raw = new Map(ids.map((id) => [id, rawProfile(season, id)]));
+  const ranks = new Map(ids.map((id) => [id, {}])), avgs = {}, ext = {};
+  for (const [k, , , , hi] of METRICS) {
+    const arr = ids.map((id) => [id, raw.get(id).v[k]]).filter(([, x]) => x != null);
+    if (!arr.length) continue;
+    const dirHigh = hi !== false; arr.sort((a, b) => (dirHigh ? b[1] - a[1] : a[1] - b[1]));
+    arr.forEach(([id], i) => { ranks.get(id)[k] = i + 1; });
+    avgs[k] = arr.reduce((a, b) => a + b[1], 0) / arr.length; ext[k] = { n: arr.length, best: arr[0][1], worst: arr[arr.length - 1][1] };
+  }
+  const teams = ids.map((id) => {
+    const r = raw.get(id), rk = ranks.get(id);
+    const N = (k) => ext[k]?.n || ids.length;
+    const judged = METRICS.filter(([k, , , , hi]) => hi !== null && rk[k] && r.withData >= 5 || (hi !== null && ["homePpg", "awayPpg"].includes(k) && rk[k]));
+    const scored = judged.map(([k, label, grp, f, hi, ph]) => ({ k, label, f, ph, r: rk[k], val: r.v[k], s: (N(k) + 1 - 2 * rk[k]) / (N(k) - 1) }));
+    const fmtS = (x, top) => `${top ? x.ph[0] : x.ph[1]} — ${x.label.toLowerCase()}: ${fmtV(x.f, x.val)} (${x.r}. w lidze${x.r === 1 ? " – najlepszy wynik" : x.r === N(x.k) ? " – najgorszy wynik" : ""})`;
+    const strengths = scored.filter((x) => x.s >= 0.5).sort((a, b) => b.s - a.s).slice(0, 5).map((x) => fmtS(x, true));
+    const weaknesses = scored.filter((x) => x.s <= -0.5).sort((a, b) => a.s - b.s).slice(0, 5).map((x) => fmtS(x, false));
+    const tags = [], R = (k) => rk[k] || 99, n = ids.length;
+    if (r.withData >= 5) {
+      if (R("poss") <= 5 && R("passAcc") <= 8) tags.push("Gra pozycyjna"); else if (R("poss") <= 4) tags.push("Dominuje w posiadaniu");
+      if (R("poss") >= n - 5) tags.push(R("clearances") <= 5 ? "Głęboka obrona" : "Niskie posiadanie");
+      if (R("poss") >= n - 6 && r.typeShare.counter + r.typeShare.long > 0.12) tags.push("Groźna z kontry");
+      if (R("ga") <= 3) tags.push("Szczelna defensywa"); if (R("gf") <= 3) tags.push("Skuteczny atak");
+      if (R("shots") <= 3) tags.push("Dużo strzałów");
+      if (r.types.total >= 8 && r.typeShare.set >= 0.2) tags.push("Groźna po stałych fragmentach");
+      if (r.types.total >= 8 && r.typeShare.head >= 0.25) tags.push("Gra górą");
+      if (R("late") <= 3) tags.push("Mocna końcówkami");
+      if (R("behindPts") <= 3) tags.push("Odrabia straty");
+      if (R("fouls") >= n - 2 || R("yellow") >= n - 2) tags.push("Twarda, kartkowa gra");
+    }
+    const pct = (k) => (rk[k] ? Math.round(((N(k) - rk[k]) / (N(k) - 1)) * 100) : null);
+    return { id: "tm-" + id, name: names.get(id), matches: r.matches, withData: r.withData,
+      metrics: Object.fromEntries(METRICS.map(([k]) => [k, r.v[k] == null ? null : Math.round(r.v[k] * 100) / 100])),
+      ranks: rk, pct: Object.fromEntries(METRICS.map(([k]) => [k, pct(k)])), strengths, weaknesses, tags: tags.slice(0, 5),
+      timing: r.timing, types: r.types, formations: r.formations.slice(0, 3), value: r.value };
+  });
+  const v = { defs: METRICS.map(([key, label, group, f, hi]) => ({ key, label, group, fmt: f, better: hi === null ? null : hi ? "high" : "low", avg: avgs[key] ?? null })), teams,
+    ready: !GAMES.running && GAMES.map.size > 0, progress: { done: GAMES.done, total: GAMES.total } };
+  profMemo = { key, v }; return v;
+}
+async function profilesRoute() {
+  const season = await tmSeason();
+  ensureGames(season);
+  const v = leagueProfiles(season);
+  return { ...v, ready: !GAMES.running, progress: { done: GAMES.done, total: GAMES.total }, note: seasonNote(season) };
+}
+
+// ---------- opis stylu gry przez AI (bez prognoz i typów) ----------
+async function profileAi(clubId) {
+  const season = await tmSeason(); await ensureGames(season);
+  const P = leagueProfiles(season), t = P.teams.find((x) => x.id === "tm-" + clubId);
+  if (!t) throw new HttpErr(404, "Nie znaleziono drużyny");
+  const key = `prof:${clubId}:${t.matches}`, hit = analysisCache.get(key);
+  if (hit && Date.now() - hit.t < 6 * HOUR) return hit.v;
+  const t0 = Date.now(); analysisLog = analysisLog.filter((x) => t0 - x < HOUR);
+  if (analysisLog.length >= 20) throw new HttpErr(429, "Limit 20 opisów na godzinę został osiągnięty. Spróbuj później.");
+  const rows = await tmTable(season), row = rows.find((r) => r.team.id === "tm-" + clubId);
+  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null).sort((a, b) => b.timestamp - a.timestamp);
+  const mine = fin.filter((m) => m.home_team.team_id === clubId || m.away_team.team_id === clubId);
+  const info = await withDeadline(tmTeam(clubId, season), 30000);
+  const mets = P.defs.map((d) => `${d.label}: ${fmtV(d.fmt, t.metrics[d.key])} (${t.ranks[d.key] ? t.ranks[d.key] + ". w lidze, średnia ligi " + fmtV(d.fmt, d.avg) : "brak"})`);
+  const ctx = { druzyna: t.name, tabela: row && { miejsce: row.position, punkty: row.points, bilans: `${row.wins}-${row.draws}-${row.losses}`, bramki: `${row.scoresFor}:${row.scoresAgainst}` },
+    forma: fsFormOf(mine, clubId, 6).map((m) => `${m.home ? "(d)" : "(w)"} ${m.opponent} ${m.gf}:${m.ga}`), statystyki_na_tle_ligi: mets,
+    mocne_strony_z_danych: t.strengths, slabe_strony_z_danych: t.weaknesses, etykiety_stylu: t.tags,
+    minuty_goli: Object.fromEntries(PERIODS.map((p, i) => [p, `zdobyte ${t.timing.scored[i]}, stracone ${t.timing.conceded[i]}`])),
+    jak_strzela_bramki: t.types, najczestsze_ustawienia: t.formations, trener: info?.coach, najlepsi_strzelcy: info?.scorers?.slice(0, 4).map((s) => `${s.name}: ${s.goals} goli, ${s.assists} asyst`),
+    niedostepni: info?.unavailable?.map((u) => `${u.name} – ${u.reason}`), wartosc_skladu_mln_eur: info ? mln(info.squadValue) : null };
+  analysisLog.push(t0);
+  const system = "Jesteś analitykiem taktycznym polskiej Ekstraklasy. Opisujesz, JAK GRA drużyna: styl, mocne i słabe strony. Opierasz się WYŁĄCZNIE na dostarczonych danych " +
+    "(nie wymyślaj faktów, których tam nie ma). NIE podajesz prognoz wyników, typów ani szans na wygraną i nie odnosisz się do zakładów. Piszesz po polsku, rzeczowo i przystępnie dla kibica. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
+  const user = `Dane:\n${JSON.stringify(ctx, null, 1)}\n\nZwróć JSON o schemacie:\n{"w_skrocie":"2 zdania: jaką drużyną jest ${t.name}","styl_gry":"3-4 zdania o stylu (posiadanie, tempo, ustawienie, jak buduje akcje)",` +
+    `"jak_atakuje":"2-3 zdania","jak_sie_broni":"2-3 zdania","mocne_strony":["..","..",".."],"slabe_strony":["..","..",".."],"kluczowi_zawodnicy":["imię i nazwisko – krótko dlaczego"],"na_co_zwrocic_uwage":["..",".."]}`;
+  const text = await nvidia([{ role: "system", content: system }, { role: "user", content: user }]);
+  const v = { ai: parseJson(text), raw: null, model: NV_MODEL, generatedAt: Date.now() };
+  if (!v.ai) v.raw = text;
+  analysisCache.set(key, { t: Date.now(), v });
+  return v;
+}
+
+// ---------- podgląd meczu przed startem (bez prognoz) ----------
 async function previewPage(matchId) {
   const season = await tmSeason(), m = season.matches.find((x) => String(x.match_id) === String(matchId));
   if (!m) throw new HttpErr(404, "Nie znaleziono meczu");
@@ -942,65 +853,10 @@ async function previewPage(matchId) {
   const mine = (id) => fin.filter((x) => x.home_team.team_id === id || x.away_team.team_id === id);
   const h2h = fin.filter((x) => [x.home_team.team_id, x.away_team.team_id].includes(hid) && [x.home_team.team_id, x.away_team.team_id].includes(aid))
     .map((x) => ({ eventId: "tm-" + x.match_id, home: x.home_team.name, away: x.away_team.name, score: `${x.home}:${x.away}`, round: x.round, date: x.timestamp }));
-  const st = statPredict(fin, hid, aid);
   const [th, ta] = await Promise.all([withDeadline(tmTeam(hid, season), 12000), withDeadline(tmTeam(aid, season), 12000)]);
   const side = (id, t) => ({ id: "tm-" + id, table: rows.find((r) => r.team.id === "tm-" + id) || null, form: fsFormOf(mine(id), id, 5), stats: fsStats(mine(id), id),
     unavailable: t ? t.unavailable : null, scorers: t ? t.scorers.slice(0, 3) : null, value: t ? mln(t.squadValue) : null, coach: t?.coach || null });
-  let stored = null;
-  if (DB_URL) { await ensureSchema().catch(() => {}); stored = (await sql("SELECT * FROM predictions WHERE match_id=$1", [m.match_id]).catch(() => []))[0] || null; }
-  return { event: fsEv(m), home: side(hid, th), away: side(aid, ta), h2h, stat: st && { p: st.p.map((x) => r1(x)), pick: st.pick, score: st.score, lamH: Math.round(st.lamH * 100) / 100, lamA: Math.round(st.lamA * 100) / 100 },
-    stored, backtest: statBacktest(season), loading: !th || !ta, note: seasonNote(season) };
-}
-async function predictMatch(matchId) { // typ AI dla konkretnego meczu (z perspektywy gospodarza)
-  const season = await tmSeason(), m = season.matches.find((x) => String(x.match_id) === String(matchId));
-  if (!m) throw new HttpErr(404, "Nie znaleziono meczu");
-  if (m.status !== "notstarted") throw new HttpErr(400, "Typ można wygenerować tylko przed meczem");
-  return analysisFS(m.home_team.team_id, "tm-", m.match_id);
-}
-
-// ---------- zadania w tle: typy dla całej kolejki, tick, powiadomienia Telegram ----------
-let roundJob = null;
-async function aiPickIds(ids) {
-  if (!DB_URL || !ids.length) return new Set();
-  await ensureSchema();
-  const list = ids.map(Number).filter(Number.isInteger).join(",");
-  if (!list) return new Set();
-  return new Set((await sql(`SELECT match_id FROM predictions WHERE pick IS NOT NULL AND match_id IN (${list})`)).map((r) => Number(r.match_id)));
-}
-async function runAiQueue(job, matches, conc = 2) {
-  let i = 0;
-  const worker = async () => {
-    while (i < matches.length && !job.stop) {
-      const m = matches[i++];
-      job.current.add(m.match_id);
-      try { await analysisFS(m.home_team.team_id, "tm-", m.match_id); job.done++; }
-      catch (e) { job.failed++; job.lastError = String(e.message || e); if (e.status === 429) job.stop = true; }
-      finally { job.current.delete(m.match_id); }
-    }
-  };
-  await Promise.all(Array.from({ length: conc }, worker));
-}
-const jobView = (j) => j && { round: j.round, total: j.total, done: j.done, failed: j.failed, skipped: j.skipped, running: j.running, current: [...j.current], lastError: j.lastError || null,
-  startedAt: j.startedAt, finishedAt: j.finishedAt || null, limitReached: !!j.stop };
-async function startRoundJob(n) {
-  if (roundJob?.running) return jobView(roundJob);
-  const season = await tmSeason(), now = Date.now() / 1000;
-  const ms = season.matches.filter((m) => roundNo(m.round) === n && m.status === "notstarted" && m.timestamp > now).sort((a, b) => a.timestamp - b.timestamp);
-  if (!ms.length) throw new HttpErr(404, `W kolejce ${n} nie ma nierozegranych meczów`);
-  const have = await aiPickIds(ms.map((m) => m.match_id)).catch(() => new Set());
-  const todo = ms.filter((m) => !have.has(m.match_id));
-  const job = roundJob = { round: n, total: ms.length, done: 0, failed: 0, skipped: ms.length - todo.length, running: true, current: new Set(), startedAt: Date.now() };
-  job.done = 0;
-  (async () => {
-    try {
-      await runAiQueue(job, todo);
-      for (const m of ms) await saveStat(m, season).catch(() => {});
-    } finally {
-      job.running = false; job.finishedAt = Date.now();
-      tgSend(`📊 Typy na kolejkę ${n} gotowe: ${job.done + job.skipped}/${job.total}${job.failed ? `, błędy: ${job.failed}` : ""}.`).catch(() => {});
-    }
-  })();
-  return jobView(job);
+  return { event: fsEv(m), home: side(hid, th), away: side(aid, ta), h2h, loading: !th || !ta, note: seasonNote(season) };
 }
 
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN, TG_CHAT = process.env.TELEGRAM_CHAT_ID;
@@ -1040,27 +896,15 @@ async function watchLive(season) {
 }
 
 let lastTick = 0, tickRunning = false, lastTickInfo = null;
-async function tick(force = false) {
+async function tick(force = false) { // budzi serwis, odświeża dane meczowe i pilnuje powiadomień o meczach
   if (tickRunning) return { skipped: "trwa", last: lastTickInfo };
   if (!force && Date.now() - lastTick < 5 * 60000) return { skipped: "za wcześnie", last: lastTickInfo };
   tickRunning = true; lastTick = Date.now();
-  const info = { at: new Date().toISOString(), stat: 0, ai: 0, notified: 0 };
+  const info = { at: new Date().toISOString(), games: 0, notified: 0 };
   try {
-    const season = await tmSeason(), now = Date.now() / 1000;
+    const season = await tmSeason();
     info.notified = (await watchLive(season).catch(() => 0)) || 0;
-    if (DB_URL) {
-      await ensureSchema();
-      await settleOpen(season).catch((e) => console.error("rozliczenie:", e.message));
-      const upc = season.matches.filter((m) => m.status === "notstarted" && m.timestamp > now && m.timestamp < now + 14 * 86400).sort((a, b) => a.timestamp - b.timestamp).slice(0, 20);
-      for (const m of upc) if (await saveStat(m, season).catch(() => false)) info.stat++;
-      const soon = upc.filter((m) => m.timestamp < now + 72 * 3600);
-      const have = await aiPickIds(soon.map((m) => m.match_id)).catch(() => new Set());
-      const todo = soon.filter((m) => !have.has(m.match_id)).slice(0, 3);
-      if (todo.length && !roundJob?.running && NV_KEY) {
-        const job = { done: 0, failed: 0, current: new Set() }; info.ai = todo.length;
-        runAiQueue(job, todo, 1).catch(() => {}); // w tle, nie blokuje odpowiedzi
-      }
-    }
+    ensureGames(season); info.games = GAMES.map.size;
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
   return info;
 }
@@ -1082,18 +926,13 @@ function send(res, status, obj) {
 async function route(p) {
   let m;
   if (p === "/api/status") {
-    return { status: 200, data: { transfermarkt: { ok: Date.now() >= tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null, telegram: !!(TG_TOKEN && TG_CHAT), database: !!DB_URL, aiLastHour: analysisLog.filter((t) => Date.now() - t < HOUR).length, lastTick: lastTickInfo } };
+    return { status: 200, data: { transfermarkt: { ok: Date.now() >= tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null, telegram: !!(TG_TOKEN && TG_CHAT), aiLastHour: analysisLog.filter((t) => Date.now() - t < HOUR).length, lastTick: lastTickInfo } };
   }
-  if (p === "/api/backtest") { const s = await tmSeason(); return { status: 200, data: { backtest: statBacktest(s), note: seasonNote(s) } }; }
   if ((m = p.match(/^\/api\/table\/(home|away|form)$/))) { const s = await anySeason(); return { status: 200, data: { standings: [{ rows: splitTable(s, m[1]) }], note: seasonNote(s) } }; }
   if (p === "/api/leaders") return { status: 200, data: await leadersRoute() };
   if ((m = p.match(/^\/api\/preview\/tm-(\d+)$/))) return { status: 200, data: await previewPage(m[1]) };
-  if ((m = p.match(/^\/api\/predict\/tm-(\d+)$/))) return { status: 200, data: await predictMatch(m[1]) };
-  if ((m = p.match(/^\/api\/predict-round\/(\d{1,2})$/))) return { status: 200, data: await startRoundJob(Number(m[1])) };
-  if (p === "/api/predict-status") return { status: 200, data: jobView(roundJob) || { running: false } };
   if (p === "/api/tick") return { status: 200, data: await tick() };
   if (p === "/api/telegram-test") { await tgSend("✅ Ekstraklasa: powiadomienia Telegram działają."); return { status: 200, data: { ok: true } }; }
-  if (p === "/api/predictions") return { status: 200, data: await predictionsReport() };
   if ((m = p.match(/^\/api\/team\/tm-(\d+)$/))) return { status: 200, data: await teamPage(m[1]) };
   if (p === "/api/table") {
     return withFs(async () => {
@@ -1150,9 +989,8 @@ async function route(p) {
   if ((m = p.match(/^\/api\/heatmap\/(\d+)\/(\d+)$/))) {
     return callApi(`/api/v1/event/${m[1]}/player/${m[2]}/heatmap`, 3600000);
   }
-  if ((m = p.match(/^\/api\/analysis\/(fs-[A-Za-z0-9]+|tm-\d+|\d+)$/))) {
-    return { status: 200, data: /^(fs|tm)-/.test(m[1]) ? await analysisFS(m[1].slice(3), m[1].slice(0, 3)) : await analysis(Number(m[1])) };
-  }
+  if ((m = p.match(/^\/api\/profile-ai\/tm-(\d+)$/))) return { status: 200, data: await profileAi(m[1]) };
+  if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
   return { status: 404, data: { error: "Nieznany endpoint" } };
 }
 

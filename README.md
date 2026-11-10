@@ -26,11 +26,10 @@ bez klucza i bez dziennego limitu. API jest nieudokumentowane; gdy zablokuje zap
 - **Zakładka Trafność** (`/api/predictions`): prognozy z analiz zapisują się w bazie Neon Postgres (zmienna `DATABASE_URL`) i rozliczają po meczu.
 
 
-## Nowe funkcje (listopad 2026)
-- **Model statystyczny (Poisson)** + backtest na sezonie + mieszanka 50/50 z AI; porównanie trafności w zakładce Trafność.
-- **Typy całej kolejki** (`/api/predict-round/N`), automatyczny `/api/tick` (typy statystyczne, AI dla meczów w ciągu 72 h, rozliczenia, powiadomienia).
-  Budzenie serwisu: `deploy/tick.yml.example` – skopiuj do `.github/workflows/tick.yml` (ping co 10 min w godzinach meczów; token aplikacji nie ma uprawnienia `workflow`, więc plik trzeba dodać ręcznie).
-- **Tabele** U siebie / Na wyjeździe / Forma oraz **rankingi** strzelców, asyst i kartek (agregacja meczów z Transfermarkt).
-- **Podgląd meczu** przed startem (`/api/preview/tm-ID`), typ AI na żądanie.
-- **Na żywo**: auto-odświeżanie, szacowana minuta (Transfermarkt jej nie podaje), powiadomienia Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, test: `/api/telegram-test`).
-- **PWA**: manifest, service worker (API nie jest cache'owane), ikony.
+## Profil gry drużyn (listopad 2026)
+Aplikacja pokazuje, **jak grają drużyny** (nie jest narzędziem do typowania wyników).
+- **Profil drużyny:** ~25 statystyk z meczów sezonu (posiadanie, podania, strzały, odbiory, faule, rożne, minuty goli, rodzaje goli, ustawienia taktyczne) z pozycją na tle ligi, etykiety stylu oraz automatycznie wyliczone mocne i słabe strony.
+- **Opis stylu gry (AI):** model Nemotron opisuje styl na podstawie tych statystyk, bez prognoz.
+- **Porównanie drużyn** i zestawienie stylów przed meczem, tabele U siebie / Na wyjeździe / Forma, rankingi strzelców, asyst i kartek.
+- **Na żywo:** auto-odświeżanie, szacowana minuta, opcjonalne powiadomienia Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, test: `/api/telegram-test`).
+- **PWA:** manifest, service worker (API nie jest cache'owane), ikony. `/api/tick` budzi serwis (`deploy/tick.yml.example` – opcjonalny ping z GitHub Actions).

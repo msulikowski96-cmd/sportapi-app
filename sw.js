@@ -1,5 +1,5 @@
 // Service worker: sieć w pierwszej kolejności dla strony, API nigdy nie jest cache'owane.
-const CACHE = "ekstraklasa-v1";
+const CACHE = "ekstraklasa-v2";
 self.addEventListener("install", (e) => { self.skipWaiting(); e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/icon.svg"])).catch(() => {})); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", (e) => {

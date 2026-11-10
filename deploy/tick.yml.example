@@ -1,0 +1,12 @@
+name: tick
+# Budzi serwis na Render i uruchamia zadania w tle (typy, rozliczenia, powiadomienia).
+on:
+  schedule:
+    - cron: "*/10 10-21 * * *"   # w godzinach meczów, co 10 min (UTC)
+    - cron: "17 */6 * * *"       # poza meczami – co 6 godzin
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -sS --max-time 150 --retry 2 https://sportapi-app.onrender.com/api/tick

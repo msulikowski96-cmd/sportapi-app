@@ -24,3 +24,13 @@ bez klucza i bez dziennego limitu. API jest nieudokumentowane; gdy zablokuje zap
 - **Analiza AI** dostaje też dane z Transfermarkt: skład i wartości rynkowe, kontuzje/zawieszenia (22 najcenniejszych zawodników), trenera i strzelców.
 - **Zakładka Drużyny** (`/api/team/tm-ID`): skład z wartościami, niedostępni, strzelcy, forma, następny mecz i bilans z rywalem.
 - **Zakładka Trafność** (`/api/predictions`): prognozy z analiz zapisują się w bazie Neon Postgres (zmienna `DATABASE_URL`) i rozliczają po meczu.
+
+
+## Nowe funkcje (listopad 2026)
+- **Model statystyczny (Poisson)** + backtest na sezonie + mieszanka 50/50 z AI; porównanie trafności w zakładce Trafność.
+- **Typy całej kolejki** (`/api/predict-round/N`), automatyczny `/api/tick` (typy statystyczne, AI dla meczów w ciągu 72 h, rozliczenia, powiadomienia).
+  Budzenie serwisu: `deploy/tick.yml.example` – skopiuj do `.github/workflows/tick.yml` (ping co 10 min w godzinach meczów; token aplikacji nie ma uprawnienia `workflow`, więc plik trzeba dodać ręcznie).
+- **Tabele** U siebie / Na wyjeździe / Forma oraz **rankingi** strzelców, asyst i kartek (agregacja meczów z Transfermarkt).
+- **Podgląd meczu** przed startem (`/api/preview/tm-ID`), typ AI na żądanie.
+- **Na żywo**: auto-odświeżanie, szacowana minuta (Transfermarkt jej nie podaje), powiadomienia Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, test: `/api/telegram-test`).
+- **PWA**: manifest, service worker (API nie jest cache'owane), ikony.

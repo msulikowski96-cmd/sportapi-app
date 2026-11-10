@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ekstraklasa</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0e1118">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
   :root { --bg:#0e1118; --card:#171c28; --line:#262e42; --txt:#e9edf6; --mut:#8a96b2; --acc:#e11d48; --live:#ef4444; --ok:#22c55e; }
   * { box-sizing:border-box; }
@@ -57,6 +62,11 @@
   .pl { display:grid; grid-template-columns:28px 1fr auto; gap:6px; font-size:13px; padding:3px 0; border-top:1px solid var(--line); } .pl .v { color:var(--mut); }
   .tag { display:inline-block; font-size:11px; padding:1px 6px; border-radius:6px; background:#7f1d1d; color:#fecaca; margin-right:6px; } .tag.s { background:#78350f; color:#fde68a; }
   .ok { color:var(--ok); } .bad { color:var(--live); }
+  .pills { display:flex; gap:6px; overflow-x:auto; margin:0 0 10px; } .pills button { background:var(--card); color:var(--mut); border:1px solid var(--line); border-radius:16px; padding:6px 12px; font-size:13px; white-space:nowrap; cursor:pointer; }
+  .pills button.on { color:#fff; background:var(--acc); border-color:var(--acc); }
+  .ld { display:grid; grid-template-columns:26px 1fr auto; gap:8px; align-items:center; padding:9px 4px; border-top:1px solid var(--line); font-size:14px; } .ld .r { color:var(--mut); } .ld b { font-size:17px; }
+  .prog { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:8px 0; } .prog i { display:block; height:100%; background:var(--acc); transition:width .4s; }
+  .mini { font-size:12px; color:var(--mut); } .vs { display:grid; grid-template-columns:1fr auto 1fr; gap:8px; font-size:13px; padding:3px 0; border-top:1px solid var(--line); } .vs .mid { color:var(--mut); text-align:center; min-width:90px; }
   canvas.pitch { width:100%; height:auto; border-radius:8px; margin-top:10px; display:block; }
 </style>
 </head>
@@ -91,7 +101,7 @@ const fail = (e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; };
 
 function matchRow(e) {
   const st = e.status?.type, live = st === "inprogress", sc = live || st === "finished";
-  const left = live ? "LIVE" : st === "finished" ? "KON." : fmtTime(e.startTimestamp);
+  const left = live ? (/^[~\d]|przerwa/.test(e.status?.description || "") ? e.status.description : "LIVE") : st === "finished" ? "KON." : fmtTime(e.startTimestamp);
   return `<div class="m" data-id="${e.id}"><div class="tm ${live ? "live" : ""}">${left}</div>
     <div><div>${esc(e.homeTeam?.name)}</div><div>${esc(e.awayTeam?.name)}</div></div>
     <div class="sc">${sc ? `<div>${e.homeScore?.current ?? "-"}</div><div>${e.awayScore?.current ?? "-"}</div>` : ""}</div></div>`;
@@ -115,9 +125,11 @@ async function showLive(silent) {
     app.innerHTML = note(lv) + (ev.length
       ? fb + `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("")
       : `<p class="mut">Teraz nie trwa żaden mecz Ekstraklasy. Zobacz zakładkę „Kolejki”.</p>`);
-    app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">dane z pamięci podręcznej (oszczędzanie dziennego limitu API)</span></p>`);
+    app.insertAdjacentHTML("beforeend", `<p><button class="btn" id="rf">↻ Odśwież</button> <span class="mut" style="font-size:12px">odświeża się automatycznie co minutę, gdy trwa mecz · minuta jest szacowana (~)</span></p>`);
     $("#rf").onclick = () => showLive();
     bindRows();
+    clearInterval(timer);
+    if (view === "live") timer = setInterval(() => { if (!document.hidden && view === "live") showLive(true); }, ev.length ? 60000 : 300000);
   } catch (e) { if (!silent) fail(e); }
 }
 
@@ -155,20 +167,44 @@ async function showDay(why) {
   }
 }
 
+let tabMode = "all";
+const TAB_MODES = [["all", "Ogółem"], ["home", "U siebie"], ["away", "Na wyjeździe"], ["form", "Forma (5)"], ["scorers", "⚽ Strzelcy"], ["assists", "🅰 Asysty"], ["cards", "🟨 Kartki"]];
+const pills = () => `<div class="pills">${TAB_MODES.map(([k, t]) => `<button data-m="${k}" class="${k === tabMode ? "on" : ""}">${t}</button>`).join("")}</div>`;
+function bindPills() { document.querySelectorAll(".pills button").forEach((b) => b.onclick = () => { tabMode = b.dataset.m; showTable(); }); }
 async function showTable() {
+  clearInterval(timer); timer = null;
+  if (["scorers", "assists", "cards"].includes(tabMode)) return showLeaders();
   loading();
   try {
-    const tb = await api("/api/table"), rows = tb.standings[0].rows, n = rows.length;
-    const zone = (r) => r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
-    app.innerHTML = note(tb) + `<div class="panel" style="padding:8px 10px"><table>
+    const tb = await api(tabMode === "all" ? "/api/table" : `/api/table/${tabMode}`), rows = tb.standings[0].rows, n = rows.length;
+    const zone = (r) => tabMode !== "all" ? "" : r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
+    app.innerHTML = pills() + note(tb) + `<div class="panel" style="padding:8px 10px"><table>
       <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
       ${rows.map((r) => `<tr class="${zone(r)} ${String(r.team.id).startsWith("tm-") ? "click" : ""}" data-tid="${r.team.id}"><td class="pos">${r.position}</td><td class="t">${esc(r.team.name)}</td>
         <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td>
         <td>${r.scoresFor}:${r.scoresAgainst}</td><td class="pts">${r.points}</td></tr>`).join("")}
     </table></div>
-    <p class="mut" style="font-size:12px">Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · kliknij drużynę, by zobaczyć jej stronę</p>`;
+    <p class="mut" style="font-size:12px">${tabMode === "all" ? "Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · " : tabMode === "form" ? "Forma = tylko 5 ostatnich meczów każdej drużyny · " : tabMode === "home" ? "Tylko mecze rozegrane u siebie · " : "Tylko mecze rozegrane na wyjeździe · "}kliknij drużynę, by zobaczyć jej stronę</p>`;
+    bindPills();
     document.querySelectorAll("tr.click").forEach((tr) => tr.onclick = () => openTeam(tr.dataset.tid));
   } catch (e) { fail(e); }
+}
+async function showLeaders() {
+  const mode = tabMode;
+  try {
+    const d = await api("/api/leaders");
+    if (mode !== tabMode || view !== "table") return;
+    if (!d.ready) {
+      app.innerHTML = pills() + `<div class="panel"><b>Liczę rankingi z ${d.total} meczów…</b><div class="prog"><i style="width:${Math.round((d.done / (d.total || 1)) * 100)}%"></i></div>
+        <p class="mut" style="font-size:12px;margin:0">Pierwsze liczenie trwa kilkanaście sekund, potem wynik jest w pamięci podręcznej.</p></div>`;
+      bindPills(); timer = setTimeout(showLeaders, 2500); return;
+    }
+    const list = d[mode], val = { scorers: (p) => `<b>${p.g}</b> <span class="mini">${p.pen ? `(w tym ${p.pen} k.) · ` : ""}${p.a} as.</span>`, assists: (p) => `<b>${p.a}</b> <span class="mini">${p.g} goli</span>`,
+      cards: (p) => `<span class="mini">🟨 ${p.y}${p.r ? " · 🟥 " + p.r : ""}</span>` }[mode];
+    app.innerHTML = pills() + `<div class="panel" style="padding:6px 12px">${list.map((p, i) => `<div class="ld"><span class="r">${i + 1}</span><div>${esc(p.name)}<div class="mini">${esc(p.club)}</div></div><div style="text-align:right">${val(p)}</div></div>`).join("") || `<p class="mut">Brak danych.</p>`}</div>
+      <p class="mut" style="font-size:12px">Źródło: Transfermarkt, ${d.matches} rozegranych meczów${d.failed ? ` (nie udało się pobrać ${d.failed}, odświeżę za kilka minut)` : ""}. Bramki samobójcze nie wliczają się do strzelców.</p>`;
+    bindPills();
+  } catch (e) { app.innerHTML = pills() + `<p class="err">${esc(e.message)}</p>`; bindPills(); }
 }
 
 function incLine(i) {
@@ -176,7 +212,7 @@ function incLine(i) {
   const side = (txt) => home ? [txt, ""] : ["", txt];
   let txt = null;
   if (i.incidentType === "goal") txt = `⚽ ${esc(i.player?.name || "Gol")}${i.incidentClass === "ownGoal" ? " (sam.)" : i.incidentClass === "penalty" ? " (k.)" : ""}`;
-  else if (i.incidentType === "card") txt = `${i.incidentClass === "yellow" ? "🟨" : "🟥"} ${esc(i.player?.name || "")}`;
+  else if (i.incidentType === "card") txt = `${i.incidentClass === "yellow" ? "🟨" : i.incidentClass === "yellowRed" ? "🟨🟥" : "🟥"} ${esc(i.player?.name || "")}`;
   else return "";
   const [h, a] = side(txt);
   return `<div class="inc"><div class="h">${h}</div><div class="mn">${i.time}'</div><div>${a}</div></div>`;
@@ -194,6 +230,7 @@ async function openMatch(id) {
       api(`/api/event/${id}/lineups`).catch(() => ({})),
     ]);
     const e = ev.event, played = ["inprogress", "finished"].includes(e.status?.type);
+    if (!played && String(id).startsWith("tm-") && e.status?.type === "notstarted") return showPreview(id);
     let html = `<button class="btn back" id="bk">‹ Wróć</button><div class="panel">
       <div class="big"><div class="n">${esc(e.homeTeam?.name)}</div>
       <div class="s">${played ? `${e.homeScore?.current ?? 0} : ${e.awayScore?.current ?? 0}` : fmtTime(e.startTimestamp)}</div>
@@ -341,27 +378,105 @@ async function openTeam(id) {
   } catch (e) { fail(e); }
 }
 
-// ---------- Trafność typów AI ----------
-async function showPred() {
-  loading();
+// ---------- Podgląd meczu przed startem ----------
+const PK = { "1": "gospodarz", X: "remis", "2": "gość" };
+function probBar(p, hn, an) {
+  return `<div class="prob"><div class="h" style="width:${p[0]}%">${Math.round(p[0])}%</div><div class="d" style="width:${p[1]}%">${Math.round(p[1])}%</div><div class="a" style="width:${p[2]}%">${Math.round(p[2])}%</div></div>
+    <div class="probl"><span>${esc(hn)}</span><span>remis</span><span>${esc(an)}</span></div>`;
+}
+async function showPreview(id, tries = 0) {
   try {
-    const d = await api("/api/predictions"), s = d.summary, pct = (a, b) => b ? Math.round((a / b) * 100) + "%" : "–";
-    const pk = { "1": "gospodarz", X: "remis", "2": "gość" };
+    const d = await api(`/api/preview/${id}`), e = d.event, hn = e.homeTeam.name, an = e.awayTeam.name, st = d.stat, sv = d.stored, bt = d.backtest;
+    const formRow = (t) => `<div class="chips">${[...t.form].reverse().map((m) => `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div>`;
+    const tr = (t) => t.table ? `${t.table.position}. miejsce · ${t.table.points} pkt · bramki ${t.table.scoresFor}:${t.table.scoresAgainst}` : "";
+    const unav = (t) => t.unavailable === null ? `<span class="mini">ładuję dane o kadrze…</span>` : t.unavailable.length
+      ? t.unavailable.map((u) => `<div style="font-size:13px;padding:2px 0"><span class="tag ${u.type === "zawieszenie" ? "s" : ""}">${u.type}</span>${esc(u.name)} <span class="mini">– ${esc(u.reason)}</span></div>`).join("") : `<span class="mini">brak znanych absencji</span>`;
+    const avg = (t) => t.stats.mecze ? `${t.stats.srednia_goli_zdobytych} zdobytych / ${t.stats.srednia_goli_straconych} straconych na mecz` : "–";
+    let h = `<button class="btn back" id="bk">‹ Wróć</button><div class="panel">
+      <div class="big"><div class="n">${esc(hn)}</div><div class="s" style="font-size:26px">${fmtTime(e.startTimestamp)}</div><div class="n">${esc(an)}</div></div>
+      <div class="sub">Zaplanowany · ${esc(fmtDay(e.startTimestamp))}</div>
+      <div class="grid2"><div><b>${esc(hn)}</b><div class="mini">${esc(tr(d.home))}</div>${formRow(d.home)}<div class="mini">${esc(avg(d.home))}</div></div>
+      <div><b>${esc(an)}</b><div class="mini">${esc(tr(d.away))}</div>${formRow(d.away)}<div class="mini">${esc(avg(d.away))}</div></div></div>`;
+    if (st) h += `<h3>Model statystyczny (Poisson)</h3>${probBar(st.p, hn, an)}
+      <div style="font-size:14px">Typ: <b>${PK[st.pick]}</b> · najbardziej prawdopodobny wynik <b>${esc(st.score)}</b> · oczekiwane bramki ${st.lamH} : ${st.lamA}</div>
+      ${bt ? `<div class="mini" style="margin-top:4px">Backtest na ${bt.mecze} meczach sezonu: trafia wynik 1/X/2 w ${bt.trafione_wyniki_proc}% (zawsze „gospodarz” = ${bt.zawsze_gospodarz_proc}%), Brier ${bt.brier} vs ${bt.brier_srednia_ligi} (średnia ligi) – niższy = lepiej.</div>` : ""}`;
+    h += `<h3>Typ AI</h3><div id="aibox">`;
+    if (sv?.pick) h += aiBlock(sv, hn, an, d.stat);
+    else h += `<button class="btn" id="aigo">🤖 Wygeneruj typ AI</button> <span class="mini">kilkanaście–kilkadziesiąt sekund</span>`;
+    h += `</div><h3>Niedostępni zawodnicy</h3><div class="grid2"><div><b style="font-size:13px">${esc(hn)}</b><br>${unav(d.home)}</div><div><b style="font-size:13px">${esc(an)}</b><br>${unav(d.away)}</div></div>`;
+    const sc = (t) => t.scorers && t.scorers.length ? t.scorers.map((x) => `${esc(x.name)} ${x.goals}⚽ ${x.assists}🅰`).join("<br>") : `<span class="mini">–</span>`;
+    h += `<h3>Najlepsi strzelcy drużyn</h3><div class="grid2"><div style="font-size:13px">${sc(d.home)}</div><div style="font-size:13px">${sc(d.away)}</div></div>`;
+    h += `<h3>Mecze bezpośrednie w sezonie</h3>` + (d.h2h.length ? d.h2h.map((x) => `<div class="vs"><span style="text-align:right">${esc(x.home)}</span><span class="mid"><b>${esc(x.score)}</b></span><span>${esc(x.away)}</span></div>`).join("") : `<span class="mini">Jeszcze się nie spotkały w tym sezonie.</span>`);
+    h += `</div>` + note(d);
+    app.innerHTML = h;
+    $("#bk").onclick = () => go(view);
+    if ($("#aigo")) $("#aigo").onclick = async () => {
+      $("#aigo").disabled = true; $("#aibox").innerHTML = `<p class="mut">Nemotron analizuje dane… (do ok. 60 s)</p>`;
+      try { await api(`/api/predict/${id}`); showPreview(id); } catch (err) { $("#aibox").innerHTML = `<p class="err">${esc(err.message)}</p>`; }
+    };
+    if (d.loading && tries < 4) setTimeout(() => { if ($("#bk") && document.querySelector(".big") && !$("#aigo")?.disabled) showPreview(id, tries + 1); }, 8000);
+  } catch (err) { fail(err); }
+}
+function aiBlock(sv, hn, an, st) {
+  const p = [sv.p_home, sv.p_draw, sv.p_away].map(Number);
+  let h = probBar(p, hn, an) + `<div style="font-size:14px">Typ AI: <b>${PK[sv.pick]}</b> · wynik <b>${esc(sv.score_pred || "–")}</b> · pewność: ${esc(sv.confidence || "–")}</div>`;
+  if (sv.b_pick) h += `<div class="mini" style="margin-top:4px">Mieszanka AI + statystyka: <b>${PK[sv.b_pick]}</b> (${Math.round(sv.b_home)}% / ${Math.round(sv.b_draw)}% / ${Math.round(sv.b_away)}%)</div>`;
+  return h;
+}
+
+// ---------- Trafność typów ----------
+let predPoll = null;
+async function showPred() {
+  clearTimeout(predPoll); loading();
+  try {
+    const d = await api("/api/predictions"), s = d.summary, pct = (a, b) => b ? Math.round((a / b) * 100) + "%" : "–", bt = d.backtest, m = d.models;
+    if (!curRound) { try { const r = await api("/api/rounds"); curRound = r.currentRound?.round || 1; maxRound = r.rounds?.length || 34; } catch {} }
+    const mk = (r, k, p1, pX, p2) => r[k] ? `${PK[r[k]]} (${Math.round(r[p1])}/${Math.round(r[pX])}/${Math.round(r[p2])}%)` : "–";
+    const mark = (r, f) => r[f] == null ? "" : `<span class="${r[f] ? "ok" : "bad"}">${r[f] ? "✓" : "✗"}</span>`;
     const row = (r, done) => `<div class="m" style="grid-template-columns:1fr auto;cursor:default">
-      <div><div>${esc(r.home_name)} – ${esc(r.away_name)}</div><div class="mut" style="font-size:12px">kolejka ${r.round ?? "?"} · typ: ${pk[r.pick]} (${r.p_home}% / ${r.p_draw}% / ${r.p_away}%) · wynik ${esc(r.score_pred || "–")} · pewność: ${esc(r.confidence || "–")}</div></div>
-      <div class="sc">${done ? `<div>${r.actual_home}:${r.actual_away}</div><div class="${r.outcome_ok ? "ok" : "bad"}">${r.outcome_ok ? "✓" : "✗"}${r.score_ok ? " ★" : ""}</div>` : `<div class="mut" style="font-weight:400;font-size:12px">${esc(fmtDay(r.match_ts))}</div>`}</div></div>`;
-    app.innerHTML = `<div class="grid2"><div class="kpi"><span class="mut">Rozliczone typy</span><b>${s.n}</b></div>
-      <div class="kpi"><span class="mut">Trafny zwycięzca / remis</span><b>${s.ok}/${s.n} · ${pct(s.ok, s.n)}</b></div>
-      <div class="kpi"><span class="mut">Trafiony dokładny wynik ★</span><b>${s.exact}/${s.n} · ${pct(s.exact, s.n)}</b></div>
-      <div class="kpi"><span class="mut">Wg pewności modelu</span><div style="font-size:13px;margin-top:4px">${d.byConfidence.length ? d.byConfidence.map((c) => `${esc(c.c || "?")}: ${c.ok}/${c.n}`).join("<br>") : "–"}</div></div></div>
-      <h3>Nadchodzące typy</h3>${d.upcoming.length ? d.upcoming.map((r) => row(r, false)).join("") : `<p class="mut">Brak. Wygeneruj analizę drużyny w zakładce „Analiza AI” – typ następnego meczu zapisze się tu automatycznie.</p>`}
+      <div><div>${esc(r.home_name)} – ${esc(r.away_name)}</div>
+        <div class="mini">kolejka ${r.round ?? "?"} · wynik wg AI: ${esc(r.score_pred || "–")}${r.confidence ? " · pewność: " + esc(r.confidence) : ""}${r.s_score ? " · wg stat.: " + esc(r.s_score) : ""}</div>
+        <div class="mini">AI: ${mk(r, "pick", "p_home", "p_draw", "p_away")} ${done ? mark(r, "outcome_ok") : ""}</div>
+        <div class="mini">Stat.: ${mk(r, "s_pick", "s_home", "s_draw", "s_away")} ${done ? mark(r, "s_ok") : ""}</div>
+        ${r.b_pick ? `<div class="mini">Mix: ${mk(r, "b_pick", "b_home", "b_draw", "b_away")} ${done ? mark(r, "b_ok") : ""}</div>` : ""}</div>
+      <div class="sc">${done ? `<div>${r.actual_home}:${r.actual_away}</div>${r.score_ok ? '<div class="ok">★</div>' : ""}` : `<div class="mut" style="font-weight:400;font-size:12px">${esc(fmtDay(r.match_ts))}</div>`}</div></div>`;
+    const mrow = (name, x) => `<tr><td class="t">${name}</td><td>${x.n}</td><td>${x.n ? pct(x.ok, x.n) : "–"}</td><td>${x.brier ?? "–"}</td></tr>`;
+    const opts = Array.from({ length: maxRound }, (_, i) => `<option value="${i + 1}" ${i + 1 === curRound ? "selected" : ""}>Kolejka ${i + 1}</option>`).join("");
+    app.innerHTML = `<div class="panel"><b>🤖 Typy całej kolejki</b>
+      <div class="row2" style="margin-top:8px"><select id="rsel">${opts}</select><button class="btn" id="rgo">Typuj kolejkę</button></div>
+      <div id="rjob"></div>
+      <p class="mini" style="margin:8px 0 0">Generuje typy AI dla wszystkich nierozegranych meczów kolejki (z limitem 20 analiz/godz.). Typ statystyczny powstaje automatycznie dla nadchodzących meczów, a AI – dla meczów w ciągu 72 h.</p></div>
+      <div class="panel" style="padding:10px 12px"><b>Porównanie modeli (rozliczone mecze)</b>
+        <table style="margin-top:6px"><tr><th class="t">Model</th><th>Mecze</th><th>Trafność 1/X/2</th><th>Brier ↓</th></tr>${mrow("AI (Nemotron)", m.ai)}${mrow("Statystyka (Poisson)", m.stat)}${mrow("Mieszanka 50/50", m.blend)}</table>
+        ${bt ? `<p class="mini" style="margin:8px 0 0"><b>Backtest modelu statystycznego</b> (każdy mecz sezonu przewidziany tylko na podstawie wcześniejszych, ${bt.mecze} meczów): ${bt.trafione_wyniki_proc}% trafionych 1/X/2, dokładny wynik ${bt.trafione_dokladne_proc}%, Brier ${bt.brier} (średnia ligi ${bt.brier_srednia_ligi}; zawsze „gospodarz” = ${bt.zawsze_gospodarz_proc}%). Brier: im niżej, tym lepiej skalibrowane prawdopodobieństwa.</p>` : ""}</div>
+      <div class="grid2"><div class="kpi"><span class="mut">Rozliczone typy AI</span><b>${s.n}</b></div>
+      <div class="kpi"><span class="mut">Trafny zwycięzca / remis (AI)</span><b>${s.ok}/${s.n} · ${pct(s.ok, s.n)}</b></div>
+      <div class="kpi"><span class="mut">Trafiony dokładny wynik ★ (AI)</span><b>${s.exact}/${s.n} · ${pct(s.exact, s.n)}</b></div>
+      <div class="kpi"><span class="mut">Wg pewności modelu AI</span><div style="font-size:13px;margin-top:4px">${d.byConfidence.length ? d.byConfidence.map((c) => `${esc(c.c || "?")}: ${c.ok}/${c.n}`).join("<br>") : "–"}</div></div></div>
+      <h3>Nadchodzące typy</h3>${d.upcoming.length ? d.upcoming.map((r) => row(r, false)).join("") : `<p class="mut">Brak. Wciśnij „Typuj kolejkę” albo otwórz nadchodzący mecz.</p>`}
       <h3>Rozliczone</h3>${d.settled.length ? d.settled.map((r) => row(r, true)).join("") : `<p class="mut">Typy rozliczą się automatycznie po zakończeniu meczów.</p>`}
-      <p class="mut" style="font-size:12px">Typ = najbardziej prawdopodobny wynik 1/X/2 z prognozy modelu. Zapisuje się ostatnia prognoza sprzed meczu.</p>`;
+      <p class="mut" style="font-size:12px">Typ = najbardziej prawdopodobny wynik 1/X/2. Zapisuje się ostatnia prognoza sprzed meczu.</p>`;
+    $("#rgo").onclick = async () => {
+      curRound = Number($("#rsel").value); $("#rgo").disabled = true;
+      try { await api(`/api/predict-round/${curRound}`); pollJob(); } catch (e) { $("#rjob").innerHTML = `<p class="err">${esc(e.message)}</p>`; $("#rgo").disabled = false; }
+    };
+    api("/api/predict-status").then((j) => { if (j.running) { $("#rgo").disabled = true; pollJob(); } }).catch(() => {});
   } catch (e) { fail(e); }
+}
+async function pollJob() {
+  clearTimeout(predPoll);
+  const box = $("#rjob"); if (!box || view !== "pred") return;
+  try {
+    const j = await api("/api/predict-status"), n = j.done + j.failed + j.skipped;
+    box.innerHTML = `<div class="prog"><i style="width:${Math.round((n / (j.total || 1)) * 100)}%"></i></div>
+      <div class="mini">Kolejka ${j.round}: ${n}/${j.total} gotowe${j.skipped ? ` (${j.skipped} miała już typ)` : ""}${j.failed ? ` · błędy: ${j.failed}` : ""}${j.limitReached ? " · osiągnięto limit analiz AI na godzinę" : ""}${j.running ? " · trwa…" : " · zakończono"}${j.lastError && j.failed ? `<br>${esc(j.lastError)}` : ""}</div>`;
+    if (j.running) predPoll = setTimeout(pollJob, 3000);
+    else { $("#rgo") && ($("#rgo").disabled = false); predPoll = setTimeout(() => { if (view === "pred") showPred(); }, 1500); }
+  } catch (e) { box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
 function go(v) {
-  view = v; clearInterval(timer); timer = null;
+  view = v; clearInterval(timer); timer = null; clearTimeout(predPoll);
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
   if (v === "live") showLive();
   else if (v === "round") showRound();
@@ -371,6 +486,7 @@ function go(v) {
   else showTable();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 go("live");
 </script>
 </body>

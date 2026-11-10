@@ -718,7 +718,7 @@ function rawProfile(season, id) {
   const acc = { n: 0, ns: 0, goalsFor: 0, goalsAg: 0, gamesCS: 0 }, S = {}, add = (k, v) => { if (Number.isFinite(v)) { (S[k] ||= [0, 0]); S[k][0] += v; S[k][1]++; } };
   const timing = { scored: Array(6).fill(0), conceded: Array(6).fill(0) }, types = { head: 0, pen: 0, set: 0, long: 0, counter: 0, own: 0, open: 0, total: 0 };
   const forms = new Map(), ppg = { h: [0, 0], a: [0, 0] }, first = { sP: 0, sN: 0, cP: 0, cN: 0 }, ages = [];
-  let late = 0, lateAg = 0, withData = 0, value = null;
+  const series = []; let late = 0, lateAg = 0, withData = 0, value = null;
   for (const m of fin) {
     const home = m.home_team.team_id === id, gf = home ? m.home : m.away, ga = home ? m.away : m.home, pts = gf > ga ? 3 : gf === ga ? 1 : 0;
     acc.n++; acc.goalsFor += gf; acc.goalsAg += ga; if (ga === 0) acc.gamesCS++;
@@ -734,6 +734,9 @@ function rawProfile(season, id) {
     add("clearances", st.defensiveStatistics?.clearances); add("offsides", st.defensiveStatistics?.offsides);
     add("corners", st.setPieceStatistics?.cornersTaken); add("fouls", st.penaltyStatistics?.freeKicksConcededFromFouls);
     add("yellow", st.gameStatistics?.yellowCards);
+    series.push({ round: roundNo(m.round), opp: home ? m.away_team.name : m.home_team.name, home, gf, ga, pts, poss: st.gameStatistics?.possessionPercentage ?? null,
+      shots: st.goalStatistics?.totalShotAttempts ?? null, shotsAg: os.goalStatistics?.totalShotAttempts ?? null,
+      passAcc: st.passingStatistics?.totalPasses ? Math.round((st.passingStatistics.accuratePasses / st.passingStatistics.totalPasses) * 1000) / 10 : null });
     if (me.tactic) forms.set(me.tactic, (forms.get(me.tactic) || 0) + 1);
     if (me.age != null) ages.push(me.age); if (me.value) value = me.value;
     const gl = g.goals.map((x) => ({ ...x, t: x.min + x.add / 100 })).sort((a, b) => a.t - b.t);
@@ -756,7 +759,7 @@ function rawProfile(season, id) {
     homePpg: per(ppg.h[0], ppg.h[1]), awayPpg: per(ppg.a[0], ppg.a[1]), age: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null };
   const gtot = types.total || 1;
   return { v, withData, matches: acc.n, timing, types, typeShare: { head: types.head / gtot, set: types.set / gtot, pen: types.pen / gtot, long: types.long / gtot, counter: types.counter / gtot },
-    formations: [...forms.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })), value, first };
+    formations: [...forms.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })), value, first, series };
 }
 const fmtV = (f, x) => (x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10).replace(/\.0$/, "") : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2));
 let profMemo = null;
@@ -774,6 +777,13 @@ function leagueProfiles(season) {
     arr.forEach(([id], i) => { ranks.get(id)[k] = i + 1; });
     avgs[k] = arr.reduce((a, b) => a + b[1], 0) / arr.length; ext[k] = { n: arr.length, best: arr[0][1], worst: arr[arr.length - 1][1] };
   }
+  const RADAR = { "Atak": ["gf", "shots", "conv"], "Obrona": ["ga", "shotsAg", "sotAg"], "Kontrola": ["poss", "passAcc", "passes"], "Dyscyplina": ["fouls", "yellow"], "Końcówki": ["late", "lateAg"], "Charakter": ["firstPts", "behindPts", "homePpg", "awayPpg"] };
+  const STYLE = ["gf", "ga", "shots", "shotsAg", "sotPct", "corners", "poss", "passes", "passAcc", "tackles", "clearances", "fouls", "offsides", "late"];
+  const mu = {}, sd = {};
+  for (const k of STYLE) { const xs = ids.map((id) => raw.get(id).v[k]).filter((x) => x != null); mu[k] = xs.reduce((a, b) => a + b, 0) / (xs.length || 1); sd[k] = Math.sqrt(xs.reduce((a, b) => a + (b - mu[k]) ** 2, 0) / (xs.length || 1)) || 1; }
+  const zv = (id) => STYLE.map((k) => { const x = raw.get(id).v[k]; return x == null ? 0 : (x - mu[k]) / sd[k]; });
+  const Z = new Map(ids.map((id) => [id, zv(id)]));
+  const dist = (a, b) => Math.sqrt(Z.get(a).reduce((s2, x, i) => s2 + (x - Z.get(b)[i]) ** 2, 0) / STYLE.length); // średnia różnica w odchyleniach standardowych
   const teams = ids.map((id) => {
     const r = raw.get(id), rk = ranks.get(id);
     const N = (k) => ext[k]?.n || ids.length;
@@ -796,10 +806,14 @@ function leagueProfiles(season) {
       if (R("fouls") >= n - 2 || R("yellow") >= n - 2) tags.push("Twarda, kartkowa gra");
     }
     const pct = (k) => (rk[k] ? Math.round(((N(k) - rk[k]) / (N(k) - 1)) * 100) : null);
+    const radar = Object.fromEntries(Object.entries(RADAR).map(([ax, ks]) => { const ps = ks.map(pct).filter((x) => x != null); return [ax, ps.length ? Math.round(ps.reduce((a, b) => a + b, 0) / ps.length) : null]; }));
+    const others = ids.filter((o) => o !== id).map((o) => [o, dist(id, o)]).sort((a, b) => a[1] - b[1]);
+    const simPct = (d) => Math.round(100 * Math.exp(-0.7 * d));
+    const similar = others.slice(0, 3).map(([o, d]) => ({ id: "tm-" + o, name: names.get(o), sim: simPct(d) })), different = others.slice(-2).reverse().map(([o, d]) => ({ id: "tm-" + o, name: names.get(o), sim: simPct(d) }));
     return { id: "tm-" + id, name: names.get(id), matches: r.matches, withData: r.withData,
       metrics: Object.fromEntries(METRICS.map(([k]) => [k, r.v[k] == null ? null : Math.round(r.v[k] * 100) / 100])),
       ranks: rk, pct: Object.fromEntries(METRICS.map(([k]) => [k, pct(k)])), strengths, weaknesses, tags: tags.slice(0, 5),
-      timing: r.timing, types: r.types, formations: r.formations.slice(0, 3), value: r.value };
+      timing: r.timing, types: r.types, formations: r.formations.slice(0, 3), value: r.value, radar, similar, different, series: r.series };
   });
   const v = { defs: METRICS.map(([key, label, group, f, hi]) => ({ key, label, group, fmt: f, better: hi === null ? null : hi ? "high" : "low", avg: avgs[key] ?? null })), teams,
     ready: !GAMES.running && GAMES.map.size > 0, progress: { done: GAMES.done, total: GAMES.total } };

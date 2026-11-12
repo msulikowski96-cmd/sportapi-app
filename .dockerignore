@@ -1,0 +1,6 @@
+.git
+deploy
+README.md
+node_modules
+firebase-public
+.firebaserc

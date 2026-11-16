@@ -3,6 +3,15 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { AsyncLocalStorage } = require("async_hooks");
+// rozgrywki: kod Transfermarkt -> nazwy; bieżące rozgrywki trzymane w kontekście zapytania (?c=PL1|CL)
+const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", country: "Polska" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", country: "Europa" } };
+const ALS = new AsyncLocalStorage();
+const comp = () => ALS.getStore() || "PL1";
+const isPL = () => comp() === "PL1";
+const STATE = {};
+const CS = () => (STATE[comp()] ||= { tmMem: null, tmFailUntil: 0, profMemo: null,
+  GAMES: { map: new Map(), running: null, done: 0, total: 0 }, LD: { running: false, done: 0, total: 0, data: null, at: 0, err: null, n: -1 } });
 
 const PORT = process.env.PORT || 3000;
 const KEY = process.env.RAPIDAPI_KEY;
@@ -250,7 +259,7 @@ const fsEv = (x) => ({
   homeTeam: { id: pfxOf(x) + x.home_team.team_id, name: x.home_team.name }, awayTeam: { id: pfxOf(x) + x.away_team.team_id, name: x.away_team.name },
   homeScore: { current: x.home }, awayScore: { current: x.away }, startTimestamp: x.timestamp,
   status: { type: x.status, description: fsDesc(x) }, roundInfo: { round: roundNo(x.round) },
-  tournament: { name: "Ekstraklasa", category: { name: "Polska" } },
+  tournament: { name: COMPS[comp()].name, category: { name: COMPS[comp()].country } },
 });
 
 function tableFrom(matches) {
@@ -281,7 +290,7 @@ async function fsTable(season) {
   return tableFrom(season.matches); // zapas: tabela policzona z wyników sezonu (0 zapytań)
 }
 function fsRounds(matches) {
-  const max = Math.max(34, ...matches.map((m) => roundNo(m.round) || 0));
+  const max = Math.max(isPL() ? 34 : 1, ...matches.map((m) => roundNo(m.round) || 0));
   const fin = matches.filter((m) => m.status === "finished").map((m) => roundNo(m.round) || 0);
   const last = fin.length ? Math.max(...fin) : 0, now = Date.now() / 1000;
   // bieżąca kolejka = kolejka najbliższego nierozegranego meczu (pomijamy zaległe mecze z wcześniejszych kolejek)
@@ -352,13 +361,11 @@ async function fsEventRoute(id, sub) {
 // Źródło główne dla tabeli, kolejek, meczów na żywo i składów (pomysł: github.com/felipeall/transfermarkt-api).
 // API nieudokumentowane i może blokować część adresów IP – wtedy serwer przechodzi na Flashscore.
 const TM_BASE = process.env.TM_BASE || "https://tmapi.transfermarkt.technology";
-const TM_COMP = "PL1";
 // nazwy klubów z polskimi znakami (Transfermarkt zwraca część bez diakrytyków)
 const TM_NAMES = { 238: "Lech Poznań", 428: "Górnik Zabrze", 255: "Legia Warszawa", 324: "Pogoń Szczecin", 168: "Zagłębie Lubin", 2118: "Wisła Płock", 2300: "Jagiellonia Białystok",
   30974: "Wieczysta Kraków", 3527: "Motor Lublin", 422: "Wisła Kraków", 5689: "Cracovia", 6110: "Korona Kielce", 6112: "Piast Gliwice", 6456: "GKS Katowice",
   7154: "Radomiak Radom", 759: "Śląsk Wrocław", 88: "Widzew Łódź", 9644: "Raków Częstochowa" };
 const tmName = (id, fallback) => TM_NAMES[id] || fallback || String(id);
-let tmFailUntil = 0;
 function tmCall(p, ttl = 10 * 60000) {
   const ck = "TM:" + p, hit = cache.get(ck);
   if (hit && Date.now() - hit.t < ttl) return Promise.resolve(hit.v);
@@ -389,7 +396,6 @@ async function tmEntities(route, ids) { // /clubs, /players (partiami po 100)
   return out;
 }
 const inWindow = (m, now = Date.now() / 1000) => m.status !== "finished" && m.status !== "postponed" && m.timestamp - 900 <= now && now <= m.timestamp + 4 * 3600;
-let tmMem = null;
 function estMinute(ts) { // Transfermarkt nie podaje minuty – szacujemy z godziny startu (1. połowa ~45', przerwa ~15', 2. połowa)
   const e = (Date.now() / 1000 - ts) / 60;
   if (!(e >= 0)) return null;
@@ -399,32 +405,32 @@ function estMinute(ts) { // Transfermarkt nie podaje minuty – szacujemy z godz
   return m > 90 ? "~90+'" : `~${m}'`;
 }
 async function tmSeason() {
-  if (Date.now() < tmFailUntil && tmMem) return { ...tmMem, stale: true, why: "Transfermarkt chwilowo niedostępny" };
-  if (Date.now() < tmFailUntil) throw new HttpErr(503, "Transfermarkt chwilowo niedostępny");
+  if (Date.now() < CS().tmFailUntil && CS().tmMem) return { ...tmMem, stale: true, why: "Transfermarkt chwilowo niedostępny" };
+  if (Date.now() < CS().tmFailUntil) throw new HttpErr(503, "Transfermarkt chwilowo niedostępny");
   try {
-    const live = tmMem?.matches.some((m) => inWindow(m));
-    const fx = await tmCall(`/competition/${TM_COMP}/fixtures`, live ? 90000 : 30 * 60000);
+    const live = CS().tmMem?.matches.some((m) => inWindow(m));
+    const fx = await tmCall(`/competition/${comp()}/fixtures`, live ? 90000 : 30 * 60000);
     const games = (fx?.fixtures || []).flatMap((d) => d.games || []);
     if (!games.length) throw new HttpErr(502, "Transfermarkt: pusty terminarz");
     const clubs = await tmEntities("/clubs", games.flatMap((g) => [g.homeClub?.clubId, g.awayClub?.clubId]));
     const nm = (id) => ({ team_id: String(id), name: tmName(id, clubs[id]?.name), short_name: clubs[id]?.baseDetails?.abbreviation });
     const matches = games.map((g) => ({
-      src: "tm", match_id: g.gameId, round: `Kolejka ${g.baseDetails?.gameDay}`,
+      src: "tm", match_id: g.gameId, round: g.baseDetails?.gameDay ? `Kolejka ${g.baseDetails.gameDay}` : "Faza pucharowa",
       timestamp: Math.floor(Date.parse(g.baseDetails?.date?.dateTimeUTC) / 1000) || 0,
       home_team: nm(g.homeClub.clubId), away_team: nm(g.awayClub.clubId),
       status: g.isFinished ? "finished" : g.isLive ? "inprogress" : "notstarted",
       home: g.score?.home ?? null, away: g.score?.away ?? null, live: g.isLive && !g.isFinished ? estMinute(Math.floor(Date.parse(g.baseDetails?.date?.dateTimeUTC) / 1000)) : null,
     }));
-    tmMem = { tm: true, matches, stale: false, at: Date.now() };
-    return tmMem;
+    CS().tmMem = { tm: true, matches, stale: false, at: Date.now() };
+    return CS().tmMem;
   } catch (e) {
-    tmFailUntil = Date.now() + 10 * 60000;
+    CS().tmFailUntil = Date.now() + 10 * 60000;
     throw e;
   }
 }
 async function tmTable(season) {
   try {
-    const d = await tmCall(`/competition/${TM_COMP}/table`, season.matches.some((m) => inWindow(m)) ? 5 * 60000 : 30 * 60000);
+    const d = await tmCall(`/competition/${comp()}/table`, season.matches.some((m) => inWindow(m)) ? 5 * 60000 : 30 * 60000);
     const names = new Map(season.matches.flatMap((m) => [[m.home_team.team_id, m.home_team.name], [m.away_team.team_id, m.away_team.name]]));
     const clubs = d?.tables?.[0]?.clubs || [];
     if (clubs.length) return clubs.map((c) => ({ position: c.ranking.current, team: { id: "tm-" + c.clubId, name: names.get(String(c.clubId)) || String(c.clubId) },
@@ -433,7 +439,8 @@ async function tmTable(season) {
   } catch {}
   return tableFrom(season.matches);
 }
-async function anySeason() { // Transfermarkt -> Flashscore (-> zapis)
+async function anySeason() { // Transfermarkt -> Flashscore (-> zapis); zapasowe źródła tylko dla Ekstraklasy
+  if (!isPL()) return tmSeason();
   try { return await tmSeason(); } catch {}
   return fsSeason();
 }
@@ -498,7 +505,7 @@ const plReason = (n) => REASON_PL.find(([re]) => re.test(String(n || "")))?.[1] 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const teamMemo = new Map();
 function tmTeam(clubId, season) {
-  const hit = teamMemo.get(clubId);
+  const tk = comp() + ":" + clubId, hit = teamMemo.get(tk);
   if (hit?.v && Date.now() - hit.t < 3 * HOUR) return Promise.resolve(hit.v);
   if (hit?.p) return hit.p; // trwa już liczenie
   const p = (async () => {
@@ -540,8 +547,8 @@ function tmTeam(clubId, season) {
     return { name: tmName(clubId, club?.name), stadium: stadium && { name: stadium.name, capacity: stadium.capacity, city: stadium.location?.city },
       coach: coaches[coachRec?.coachId]?.name || null, squad, squadValue: total, unavailable, scorers };
   })();
-  teamMemo.set(clubId, { t: Date.now(), p });
-  p.then((v) => teamMemo.set(clubId, { t: Date.now(), v })).catch(() => teamMemo.delete(clubId));
+  teamMemo.set(tk, { t: Date.now(), p });
+  p.then((v) => teamMemo.set(tk, { t: Date.now(), v })).catch(() => teamMemo.delete(tk));
   return p;
 }
 const mln = (v) => (v == null ? null : Math.round(v / 100000) / 10);
@@ -557,7 +564,7 @@ function teamCtx(t) {
 async function teamPage(clubId) {
   const P = "tm-", season = await tmSeason(), rows = await tmTable(season);
   const row = rows.find((r) => r.team.id === P + clubId);
-  if (!row) throw new HttpErr(404, "Nie znaleziono drużyny w tabeli Ekstraklasy");
+  if (!row) throw new HttpErr(404, `Nie znaleziono drużyny w tabeli ${COMPS[comp()].gen}`);
   const fin = season.matches.filter((m) => m.status === "finished" && m.home != null).sort((a, b) => b.timestamp - a.timestamp);
   const mine = fin.filter((m) => m.home_team.team_id === clubId || m.away_team.team_id === clubId);
   const now = Date.now() / 1000;
@@ -572,8 +579,8 @@ async function teamPage(clubId) {
   }
   ensureGames(season);
   const info = await tmTeam(clubId, season);
-  const profile = GAMES.running ? null : leagueProfiles(season).teams.find((t) => t.id === P + clubId) || null;
-  return { profile, profileProgress: { done: GAMES.done, total: GAMES.total }, team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
+  const profile = CS().GAMES.running ? null : leagueProfiles(season).teams.find((t) => t.id === P + clubId) || null;
+  return { profile, profileProgress: { done: CS().GAMES.done, total: CS().GAMES.total }, team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
     stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, note: seasonNote(season) };
 }
 
@@ -623,8 +630,8 @@ function splitTable(season, mode) {
 }
 
 // ---------- królowie strzelców / asyst / kartek (agregacja wszystkich meczów z Transfermarkt) ----------
-const LD = { running: false, done: 0, total: 0, data: null, at: 0, err: null, n: -1 };
 async function computeLeaders(season) {
+  const LD = CS().LD;
   LD.running = true; LD.err = null;
   try {
     const games = season.matches.filter((m) => m.status === "finished" && m.home != null);
@@ -651,6 +658,7 @@ async function computeLeaders(season) {
   } catch (e) { LD.err = String(e.message || e); } finally { LD.running = false; }
 }
 async function leadersRoute() {
+  const LD = CS().LD;
   const season = await tmSeason();
   const n = season.matches.filter((m) => m.status === "finished" && m.home != null).length;
   const fresh = LD.data && LD.n === n && Date.now() - LD.at < HOUR;
@@ -661,7 +669,6 @@ async function leadersRoute() {
 }
 
 // ---------- dane meczowe: statystyki klubów, minuty i rodzaje goli ze wszystkich rozegranych meczów ----------
-const GAMES = { map: new Map(), running: null, done: 0, total: 0 };
 function slimGame(g) {
   const side = (c) => { const ps = c?.lineup?.players || [], ages = ps.map((p) => p.ageAtGameDate).filter(Number.isFinite);
     return { id: String(c?.clubId), tactic: c?.tactic?.tactic || null, st: c?.clubStatistics || {}, age: ages.length ? ages.reduce((a, b) => a + b, 0) / ages.length : null, value: c?.squadMarketValue?.value ?? null }; };
@@ -670,15 +677,15 @@ function slimGame(g) {
     cards: (g.actions || []).filter((a) => a.type === "CARD").map((a) => ({ club: String(a.clubId), kind: a.actionId })) };
 }
 function ensureGames(season) {
-  const need = season.matches.filter((m) => m.status === "finished" && m.home != null && !GAMES.map.has(String(m.match_id)));
+  const need = season.matches.filter((m) => m.status === "finished" && m.home != null && !CS().GAMES.map.has(String(m.match_id)));
   if (!need.length) return null;
-  if (GAMES.running) return GAMES.running;
-  GAMES.total = need.length; GAMES.done = 0;
-  GAMES.running = pool(need, 5, async (m) => {
-    try { const g = await tmCall(`/game/${m.match_id}`, 7 * 24 * HOUR); if (g) GAMES.map.set(String(m.match_id), slimGame(g)); } catch {}
-    GAMES.done++;
-  }).finally(() => { GAMES.running = null; });
-  return GAMES.running;
+  if (CS().GAMES.running) return CS().GAMES.running;
+  CS().GAMES.total = need.length; CS().GAMES.done = 0;
+  CS().GAMES.running = pool(need, 5, async (m) => {
+    try { const g = await tmCall(`/game/${m.match_id}`, 7 * 24 * HOUR); if (g) CS().GAMES.map.set(String(m.match_id), slimGame(g)); } catch {}
+    CS().GAMES.done++;
+  }).finally(() => { CS().GAMES.running = null; });
+  return CS().GAMES.running;
 }
 
 // ---------- profil gry drużyny ----------
@@ -723,7 +730,7 @@ function rawProfile(season, id) {
     const home = m.home_team.team_id === id, gf = home ? m.home : m.away, ga = home ? m.away : m.home, pts = gf > ga ? 3 : gf === ga ? 1 : 0;
     acc.n++; acc.goalsFor += gf; acc.goalsAg += ga; if (ga === 0) acc.gamesCS++;
     const pp = home ? ppg.h : ppg.a; pp[0] += pts; pp[1]++;
-    const g = GAMES.map.get(String(m.match_id)); if (!g) continue;
+    const g = CS().GAMES.map.get(String(m.match_id)); if (!g) continue;
     withData++;
     const me = home ? g.home : g.away, op = home ? g.away : g.home, st = me.st, os = op.st;
     add("poss", st.gameStatistics?.possessionPercentage); add("passes", st.passingStatistics?.totalPasses);
@@ -751,7 +758,7 @@ function rawProfile(season, id) {
   const sumOf = (k) => (S[k] ? S[k][0] : 0);
   const v = {
     gf: per(acc.goalsFor, acc.n), ga: per(acc.goalsAg, acc.n), cs: per(acc.gamesCS, acc.n) != null ? (acc.gamesCS / acc.n) * 100 : null,
-    shots: avg("shots"), sotPct: S.shots ? (sumOf("sot") / sumOf("shots")) * 100 : null, conv: S.shots ? (fin.filter((m) => GAMES.map.has(String(m.match_id))).reduce((a, m) => a + (m.home_team.team_id === id ? m.home : m.away), 0) / sumOf("shots")) * 100 : null,
+    shots: avg("shots"), sotPct: S.shots ? (sumOf("sot") / sumOf("shots")) * 100 : null, conv: S.shots ? (fin.filter((m) => CS().GAMES.map.has(String(m.match_id))).reduce((a, m) => a + (m.home_team.team_id === id ? m.home : m.away), 0) / sumOf("shots")) * 100 : null,
     corners: avg("corners"), shotsAg: avg("shotsAg"), sotAg: avg("sotAg"), tackles: avg("tackles"), tackleSucc: S.tackles ? (sumOf("tackS") / sumOf("tackles")) * 100 : null,
     clearances: avg("clearances"), poss: avg("poss"), passes: avg("passes"), passAcc: S.passAccD ? (sumOf("passAccN") / sumOf("passAccD")) * 100 : null,
     offsides: avg("offsides"), fouls: avg("fouls"), yellow: avg("yellow"), late, lateAg,
@@ -762,10 +769,9 @@ function rawProfile(season, id) {
     formations: [...forms.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })), value, first, series };
 }
 const fmtV = (f, x) => (x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10).replace(/\.0$/, "") : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2));
-let profMemo = null;
 function leagueProfiles(season) {
-  const key = `${season.matches.filter((m) => m.status === "finished").length}:${GAMES.map.size}`;
-  if (profMemo?.key === key) return profMemo.v;
+  const key = `${season.matches.filter((m) => m.status === "finished").length}:${CS().GAMES.map.size}`;
+  if (CS().profMemo?.key === key) return CS().profMemo.v;
   const ids = [...new Set(season.matches.flatMap((m) => [m.home_team.team_id, m.away_team.team_id]))];
   const names = new Map(season.matches.flatMap((m) => [[m.home_team.team_id, m.home_team.name], [m.away_team.team_id, m.away_team.name]]));
   const raw = new Map(ids.map((id) => [id, rawProfile(season, id)]));
@@ -784,16 +790,17 @@ function leagueProfiles(season) {
   const zv = (id) => STYLE.map((k) => { const x = raw.get(id).v[k]; return x == null ? 0 : (x - mu[k]) / sd[k]; });
   const Z = new Map(ids.map((id) => [id, zv(id)]));
   const dist = (a, b) => Math.sqrt(Z.get(a).reduce((s2, x, i) => s2 + (x - Z.get(b)[i]) ** 2, 0) / STYLE.length); // średnia różnica w odchyleniach standardowych
+  const maxWD = Math.max(0, ...ids.map((id) => raw.get(id).withData)), minData = Math.min(5, Math.max(2, maxWD - 1));
   const teams = ids.map((id) => {
     const r = raw.get(id), rk = ranks.get(id);
     const N = (k) => ext[k]?.n || ids.length;
-    const judged = METRICS.filter(([k, , , , hi]) => hi !== null && rk[k] && r.withData >= 5 || (hi !== null && ["homePpg", "awayPpg"].includes(k) && rk[k]));
+    const judged = METRICS.filter(([k, , , , hi]) => hi !== null && rk[k] && r.withData >= minData || (hi !== null && ["homePpg", "awayPpg"].includes(k) && rk[k]));
     const scored = judged.map(([k, label, grp, f, hi, ph]) => ({ k, label, f, ph, r: rk[k], val: r.v[k], s: (N(k) + 1 - 2 * rk[k]) / (N(k) - 1) }));
     const fmtS = (x, top) => `${top ? x.ph[0] : x.ph[1]} — ${x.label.toLowerCase()}: ${fmtV(x.f, x.val)} (${x.r}. w lidze${x.r === 1 ? " – najlepszy wynik" : x.r === N(x.k) ? " – najgorszy wynik" : ""})`;
     const strengths = scored.filter((x) => x.s >= 0.5).sort((a, b) => b.s - a.s).slice(0, 5).map((x) => fmtS(x, true));
     const weaknesses = scored.filter((x) => x.s <= -0.5).sort((a, b) => a.s - b.s).slice(0, 5).map((x) => fmtS(x, false));
     const tags = [], R = (k) => rk[k] || 99, n = ids.length;
-    if (r.withData >= 5) {
+    if (r.withData >= minData) {
       if (R("poss") <= 5 && R("passAcc") <= 8) tags.push("Gra pozycyjna"); else if (R("poss") <= 4) tags.push("Dominuje w posiadaniu");
       if (R("poss") >= n - 5) tags.push(R("clearances") <= 5 ? "Głęboka obrona" : "Niskie posiadanie");
       if (R("poss") >= n - 6 && r.typeShare.counter + r.typeShare.long > 0.12) tags.push("Groźna z kontry");
@@ -816,14 +823,14 @@ function leagueProfiles(season) {
       timing: r.timing, types: r.types, formations: r.formations.slice(0, 3), value: r.value, radar, similar, different, series: r.series };
   });
   const v = { defs: METRICS.map(([key, label, group, f, hi]) => ({ key, label, group, fmt: f, better: hi === null ? null : hi ? "high" : "low", avg: avgs[key] ?? null })), teams,
-    ready: !GAMES.running && GAMES.map.size > 0, progress: { done: GAMES.done, total: GAMES.total } };
-  profMemo = { key, v }; return v;
+    ready: !CS().GAMES.running && CS().GAMES.map.size > 0, progress: { done: CS().GAMES.done, total: CS().GAMES.total } };
+  CS().profMemo = { key, v }; return v;
 }
 async function profilesRoute() {
   const season = await tmSeason();
   ensureGames(season);
   const v = leagueProfiles(season);
-  return { ...v, ready: !GAMES.running, progress: { done: GAMES.done, total: GAMES.total }, note: seasonNote(season) };
+  return { ...v, ready: !CS().GAMES.running, progress: { done: CS().GAMES.done, total: CS().GAMES.total }, note: seasonNote(season) };
 }
 
 // ---------- opis stylu gry przez AI (bez prognoz i typów) ----------
@@ -831,7 +838,7 @@ async function profileAi(clubId) {
   const season = await tmSeason(); await ensureGames(season);
   const P = leagueProfiles(season), t = P.teams.find((x) => x.id === "tm-" + clubId);
   if (!t) throw new HttpErr(404, "Nie znaleziono drużyny");
-  const key = `prof:${clubId}:${t.matches}`, hit = analysisCache.get(key);
+  const key = `prof:${comp()}:${clubId}:${t.matches}`, hit = analysisCache.get(key);
   if (hit && Date.now() - hit.t < 6 * HOUR) return hit.v;
   const t0 = Date.now(); analysisLog = analysisLog.filter((x) => t0 - x < HOUR);
   if (analysisLog.length >= 20) throw new HttpErr(429, "Limit 20 opisów na godzinę został osiągnięty. Spróbuj później.");
@@ -847,7 +854,7 @@ async function profileAi(clubId) {
     jak_strzela_bramki: t.types, najczestsze_ustawienia: t.formations, trener: info?.coach, najlepsi_strzelcy: info?.scorers?.slice(0, 4).map((s) => `${s.name}: ${s.goals} goli, ${s.assists} asyst`),
     niedostepni: info?.unavailable?.map((u) => `${u.name} – ${u.reason}`), wartosc_skladu_mln_eur: info ? mln(info.squadValue) : null };
   analysisLog.push(t0);
-  const system = "Jesteś analitykiem taktycznym polskiej Ekstraklasy. Opisujesz, JAK GRA drużyna: styl, mocne i słabe strony. Opierasz się WYŁĄCZNIE na dostarczonych danych " +
+  const system = `Jesteś analitykiem taktycznym. Analizujesz drużyny w rozgrywkach: ${COMPS[comp()].name}${isPL() ? "" : " (porównanie dotyczy tylko meczów w tych rozgrywkach, a \"liga\" oznacza wszystkie drużyny fazy ligowej)"}. Opisujesz, JAK GRA drużyna: styl, mocne i słabe strony. Opierasz się WYŁĄCZNIE na dostarczonych danych ` +
     "(nie wymyślaj faktów, których tam nie ma). NIE podajesz prognoz wyników, typów ani szans na wygraną i nie odnosisz się do zakładów. Piszesz po polsku, rzeczowo i przystępnie dla kibica. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
   const user = `Dane:\n${JSON.stringify(ctx, null, 1)}\n\nZwróć JSON o schemacie:\n{"w_skrocie":"2 zdania: jaką drużyną jest ${t.name}","styl_gry":"3-4 zdania o stylu (posiadanie, tempo, ustawienie, jak buduje akcje)",` +
     `"jak_atakuje":"2-3 zdania","jak_sie_broni":"2-3 zdania","mocne_strony":["..","..",".."],"slabe_strony":["..","..",".."],"kluczowi_zawodnicy":["imię i nazwisko – krótko dlaczego"],"na_co_zwrocic_uwage":["..",".."]}`;
@@ -918,7 +925,8 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
   try {
     const season = await tmSeason();
     info.notified = (await watchLive(season).catch(() => 0)) || 0;
-    ensureGames(season); info.games = GAMES.map.size;
+    ensureGames(season); info.games = CS().GAMES.map.size;
+    await ALS.run("CL", async () => { const s2 = await tmSeason(); ensureGames(s2); info.gamesCL = CS().GAMES.map.size; }).catch(() => {});
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
   return info;
 }
@@ -926,6 +934,7 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
 // ---------- routing ----------
 // Flashscore jako źródło główne; przy błędzie – stare źródło (SportAPI7).
 async function withFs(fsFn, oldFn) {
+  if (!isPL()) return { status: 200, data: await fsFn() };
   let fsErr;
   try { return { status: 200, data: await fsFn() }; } catch (e) { fsErr = e; }
   const r = await oldFn();
@@ -940,7 +949,7 @@ function send(res, status, obj) {
 async function route(p) {
   let m;
   if (p === "/api/status") {
-    return { status: 200, data: { transfermarkt: { ok: Date.now() >= tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null, telegram: !!(TG_TOKEN && TG_CHAT), aiLastHour: analysisLog.filter((t) => Date.now() - t < HOUR).length, lastTick: lastTickInfo } };
+    return { status: 200, data: { transfermarkt: { ok: Date.now() >= CS().tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null, telegram: !!(TG_TOKEN && TG_CHAT), aiLastHour: analysisLog.filter((t) => Date.now() - t < HOUR).length, lastTick: lastTickInfo } };
   }
   if ((m = p.match(/^\/api\/table\/(home|away|form)$/))) { const s = await anySeason(); return { status: 200, data: { standings: [{ rows: splitTable(s, m[1]) }], note: seasonNote(s) } }; }
   if (p === "/api/leaders") return { status: 200, data: await leadersRoute() };
@@ -973,6 +982,7 @@ async function route(p) {
     });
   }
   if (p === "/api/live") {
+    if (!isPL()) { const s = await tmSeason(); return { status: 200, data: { source: "transfermarkt", events: s.matches.filter((x) => x.status === "inprogress").map(fsEv), note: seasonNote(s) } }; }
     try {
       const s = await anySeason();
       const events = s.tm ? s.matches.filter((m) => m.status === "inprogress").map(fsEv) : await fsLive(s);
@@ -990,6 +1000,7 @@ async function route(p) {
     return r;
   }
   if ((m = p.match(/^\/api\/day\/(\d{4}-\d{2}-\d{2})$/))) { // tylko API-Football (wczoraj–dziś–jutro)
+    if (!isPL()) throw new HttpErr(503, "Transfermarkt chwilowo niedostępny");
     const list = await afCall(`/fixtures?date=${m[1]}&timezone=Europe/Warsaw`, 120000);
     return { status: 200, data: { source: "api-football", events: afLeague(list) } };
   }
@@ -1017,12 +1028,13 @@ const STATIC = {
   "/icon-512.png": { file: "icon-512.png", type: "image/png" },
 };
 const server = http.createServer(async (req, res) => {
-  const p = new URL(req.url, `http://${req.headers.host}`).pathname;
+  const u = new URL(req.url, `http://${req.headers.host}`), p = u.pathname;
+  const c = COMPS[u.searchParams.get("c")] ? u.searchParams.get("c") : "PL1";
 
   if (p.startsWith("/api/")) {
     if (!KEY) return send(res, 500, { error: "Brak zmiennej środowiskowej RAPIDAPI_KEY" });
     try {
-      const r = await route(p);
+      const r = await ALS.run(c, () => route(p));
       return send(res, r.status, r.data);
     } catch (e) {
       return send(res, e.status || 502, { error: String(e.message || e) });

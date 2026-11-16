@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Ekstraklasa – jak grają drużyny</title>
-<meta name="description" content="Wyniki na żywo, tabela i profile gry drużyn Ekstraklasy: styl, mocne i słabe strony.">
+<title>Jak grają drużyny – Ekstraklasa i Liga Mistrzów</title>
+<meta name="description" content="Wyniki na żywo, tabela i profile gry drużyn Ekstraklasy i Ligi Mistrzów: styl, mocne i słabe strony.">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0b0f14">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -86,11 +86,16 @@
   .vs { display:grid; grid-template-columns:1fr auto 1fr; gap:8px; font-size:14px; padding:6px 0; border-top:1px solid var(--line); } .vs .mid { font-family:var(--head); font-size:18px; text-align:center; min-width:60px; }
   .tabs2 { display:flex; gap:6px; overflow-x:auto; margin:0 0 8px; scrollbar-width:none; } .tabs2 button { background:var(--s2); color:var(--mut); border:1px solid var(--line); border-radius:99px; padding:5px 12px; font:500 12px var(--body); white-space:nowrap; cursor:pointer; } .tabs2 button.on { color:#04251a; background:var(--acc); border-color:var(--acc); font-weight:600; }
   .sim { display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--line); cursor:pointer; } .sim:first-of-type { border-top:0; } .sim:hover .sn { color:var(--acc); } .sim .sn { flex:1; font-weight:500; } .sim b { font-family:var(--head); font-size:20px; } .sim .sb { width:70px; height:6px; background:var(--s2); border-radius:3px; overflow:hidden; } .sim .sb i { display:block; height:100%; background:var(--acc); }
+  .cs { margin-left:auto; display:flex; background:var(--s1); border:1px solid var(--line); border-radius:99px; padding:3px; gap:2px; }
+  .cs button { background:none; border:0; color:var(--mut); font:600 12px var(--body); padding:7px 12px; border-radius:99px; cursor:pointer; white-space:nowrap; }
+  .cs button.on { background:var(--acc); color:#04251a; }
+  body.cl .logo { background:linear-gradient(135deg,#60a5fa,#4338ca); }
+  @media (max-width:520px) { header { flex-wrap:wrap; } .cs { margin-left:0; width:100%; } .cs button { flex:1; } }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
 </style>
 </head>
 <body>
-<header><div class="logo">⚽</div><h1>Ekstraklasa<small>jak grają drużyny: styl, mocne i słabe strony</small></h1></header>
+<header><div class="logo" id="logo">⚽</div><h1><span id="cname">Ekstraklasa</span><small>jak grają drużyny: styl, mocne i słabe strony</small></h1><div class="cs" id="cs"><button data-c="PL1">Ekstraklasa</button><button data-c="CL">Liga Mistrzów</button></div></header>
 <nav id="nav">
   <button data-v="live" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4"/></svg>Na żywo</button>
   <button data-v="round"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Mecze</button>
@@ -105,9 +110,18 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":
 const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString("pl-PL", { hour:"2-digit", minute:"2-digit" });
 const fmtDay = (t) => new Date(t * 1000).toLocaleDateString("pl-PL", { weekday:"long", day:"numeric", month:"long" });
 let view = "live", round = null, maxRound = 34, curRound = null, timer = null, tabMode = "all", cmpA = null, cmpB = null;
+const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", logo: "⚽" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", logo: "⭐" } };
+let COMP = (() => { const q = new URLSearchParams(location.search).get("c"); let ls = null; try { ls = localStorage.getItem("comp"); } catch {} return COMPS[q] ? q : COMPS[ls] ? ls : "PL1"; })();
+function setComp(c, reload = true) {
+  COMP = c; try { localStorage.setItem("comp", c); } catch {}
+  document.body.classList.toggle("cl", c === "CL"); $("#cname").textContent = COMPS[c].name; $("#logo").textContent = COMPS[c].logo;
+  document.querySelectorAll("#cs button").forEach((b) => b.classList.toggle("on", b.dataset.c === c));
+  const u = new URL(location.href); if (c === "PL1") u.searchParams.delete("c"); else u.searchParams.set("c", c); history.replaceState(null, "", u);
+  if (reload) { round = null; curRound = null; maxRound = c === "CL" ? 8 : 34; cmpA = cmpB = null; dayOff = 0; go(view); }
+}
 
 async function api(p) {
-  const r = await fetch(p); const j = await r.json().catch(() => ({}));
+  const r = await fetch(p + (p.includes("?") ? "&" : "?") + "c=" + COMP); const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || j.message || `Błąd ${r.status}`);
   return j;
 }
@@ -178,7 +192,7 @@ async function showDay(why) {
   try {
     const ev = (await api(`/api/day/${ds}`)).events;
     app.innerHTML = `<div class="nm">Tryb zastępczy (API-Football): ${esc(why || "")}<br>Dostępne są tylko mecze z wczoraj, dziś i jutra.</div>
-      <div class="bar"><button id="pd" ${dayOff <= -1 ? "disabled" : ""}>‹</button><b>${["Wczoraj", "Dziś", "Jutro"][dayOff + 1]}</b><button id="nd" ${dayOff >= 1 ? "disabled" : ""}>›</button></div>` + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów Ekstraklasy tego dnia.</p>`);
+      <div class="bar"><button id="pd" ${dayOff <= -1 ? "disabled" : ""}>‹</button><b>${["Wczoraj", "Dziś", "Jutro"][dayOff + 1]}</b><button id="nd" ${dayOff >= 1 ? "disabled" : ""}>›</button></div>` + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów ${COMPS[COMP].gen} tego dnia.</p>`);
     $("#pd").onclick = () => { dayOff--; showDay(why); }; $("#nd").onclick = () => { dayOff++; showDay(why); }; bindRows();
   } catch (e2) { app.innerHTML = `<p class="err">${esc(why || e2.message)}</p><p class="mini">Tryb zastępczy też niedostępny: ${esc(e2.message)}</p>`; }
 }
@@ -192,12 +206,12 @@ async function showTable() {
   loading();
   try {
     const tb = await api(tabMode === "all" ? "/api/table" : `/api/table/${tabMode}`), rows = tb.standings[0].rows, n = rows.length;
-    const zone = (r) => tabMode !== "all" ? "" : r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
+    const zone = (r) => tabMode !== "all" ? "" : COMP === "CL" ? (r.position <= 8 ? "z1" : r.position <= 24 ? "z2" : "zr") : r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
     app.innerHTML = pills() + note(tb) + `<div class="card" style="padding:6px 10px"><table>
       <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
       ${rows.map((r) => `<tr class="${zone(r)} ${String(r.team.id).startsWith("tm-") ? "click" : ""}" data-tid="${r.team.id}"><td class="pos">${r.position}</td><td class="t"><div class="tn">${badge(r.team.name, 24)}${esc(r.team.name)}</div></td>
         <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td>${r.scoresFor}:${r.scoresAgainst}</td><td class="pts">${r.points}</td></tr>`).join("")}
-    </table></div><p class="mini">${tabMode === "all" ? "Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · " : tabMode === "form" ? "Forma = tylko 5 ostatnich meczów każdej drużyny · " : tabMode === "home" ? "Tylko mecze u siebie · " : "Tylko mecze na wyjeździe · "}kliknij drużynę, by zobaczyć jej profil</p>`;
+    </table></div><p class="mini">${tabMode === "all" ? (COMP === "CL" ? "Zielony – 1–8: awans do 1/8 finału · niebieski – 9–24: baraże · czerwony – 25–36: odpadają · " : "Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · ") : tabMode === "form" ? "Forma = tylko 5 ostatnich meczów każdej drużyny · " : tabMode === "home" ? "Tylko mecze u siebie · " : "Tylko mecze na wyjeździe · "}kliknij drużynę, by zobaczyć jej profil</p>`;
     bindPills(); document.querySelectorAll("tr.click").forEach((tr) => tr.onclick = () => openTeam(tr.dataset.tid));
   } catch (e) { fail(e); }
 }
@@ -407,6 +421,8 @@ function go(v) {
   ({ live: showLive, round: showRound, table: showTable, teams: showTeams, cmp: showCompare }[v] || showTable)();
 }
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));
+document.querySelectorAll("#cs button").forEach((b) => b.onclick = () => { if (b.dataset.c !== COMP) setComp(b.dataset.c); });
+setComp(COMP, false);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 go("live");
 </script>

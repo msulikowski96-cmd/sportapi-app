@@ -988,7 +988,8 @@ async function withFs(fsFn, oldFn) {
   return r;
 }
 function send(res, status, obj) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  // CORS: strona na GitHub Pages pobiera dane z tego serwera (API jest tylko do odczytu)
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
   res.end(JSON.stringify(obj));
 }
 

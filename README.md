@@ -59,3 +59,6 @@ Odświeżenie wycen (np. po oknie transferowym), w katalogu `transfer-/backend`:
 
 Model obejmuje zawodników 8 lig (top 5, Portugalia, Holandia, Ekstraklasa). Mediana błędu na transferach testowych to ok. 45–50%,
 więc wyceny Transfermarkt są zwykle trafniejsze. Dane pochodzą z Transfermarktu: tylko do prywatnego użytku.
+
+## GitHub Pages
+Strona może działać też pod https://msulikowski96-cmd.github.io/sportapi-app/ (dane z serwera na Render). Instrukcja: `deploy/GITHUB_PAGES.md`.

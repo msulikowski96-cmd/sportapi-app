@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Jak grają drużyny – Ekstraklasa i Liga Mistrzów</title>
 <meta name="description" content="Wyniki na żywo, tabela i profile gry drużyn Ekstraklasy i Ligi Mistrzów: styl, mocne i słabe strony.">
-<link rel="manifest" href="/manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0b0f14">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -139,8 +139,10 @@ function setComp(c, reload = true) {
   if (reload) { round = null; curRound = null; maxRound = COMPS[c].rounds; cmpA = cmpB = null; dayOff = 0; loading(); crestsFor(c).finally(() => { if (COMP === c) go(view); }); }
 }
 
+// strona może działać na GitHub Pages (same pliki), a dane bierze wtedy z serwera na Render
+const API_BASE = location.hostname.endsWith("github.io") ? "https://sportapi-app.onrender.com" : "";
 async function api(p) {
-  const r = await fetch(p + (p.includes("?") ? "&" : "?") + "c=" + COMP); const j = await r.json().catch(() => ({}));
+  const r = await fetch(API_BASE + p + (p.includes("?") ? "&" : "?") + "c=" + COMP); const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || j.message || `Błąd ${r.status}`);
   return j;
 }
@@ -157,7 +159,7 @@ const tn = (n, sz = 18) => `<span class="tnm">${badge(n, sz)}${esc(n)}</span>`; 
 function applyCrests() { document.querySelectorAll(".bd:not(.cr)[data-n]").forEach((el) => { const c = CREST[el.dataset.n]; if (c && !el.querySelector("img")) { el.classList.add("cr"); el.insertAdjacentHTML("beforeend", crestImg(c)); } }); }
 const crestJobs = {};
 function crestsFor(c) { // herby rozgrywek; po wczytaniu dorysowują się też w już widocznych miejscach
-  if (!crestJobs[c]) crestJobs[c] = fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : Promise.reject()).then((m) => { Object.assign(CREST, m); applyCrests(); })
+  if (!crestJobs[c]) crestJobs[c] = fetch(`${API_BASE}/api/crests?c=${c}`).then((r) => r.ok ? r.json() : Promise.reject()).then((m) => { Object.assign(CREST, m); applyCrests(); })
     .catch(() => { delete crestJobs[c]; });
   return Promise.race([crestJobs[c], new Promise((r) => setTimeout(r, 4000))]);
 }
@@ -511,7 +513,7 @@ function go(v) {
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));
 document.querySelectorAll("#cs button").forEach((b) => b.onclick = () => { if (b.dataset.c !== COMP) setComp(b.dataset.c); });
 setComp(COMP, false);
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 loadCrests().finally(() => go("live"));
 </script>
 </body>

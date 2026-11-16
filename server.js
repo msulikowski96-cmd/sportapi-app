@@ -507,6 +507,48 @@ const REASON_PL = [[/yellow card suspension/i, "zawieszenie za kartki"], [/red c
   [/fracture|broken/i, "złamanie"], [/surgery|operation/i, "po operacji"], [/injur/i, "kontuzja"]];
 const plReason = (n) => REASON_PL.find(([re]) => re.test(String(n || "")))?.[1] || String(n || "kontuzja");
 const todayIso = () => new Date().toISOString().slice(0, 10);
+// ---------- wyceny AI (silnik Football Market Value z repo transfer-, plik z tools/fmv_export.py) ----------
+let FMV;
+function fmv() {
+  if (FMV === undefined) { try { FMV = JSON.parse(fs.readFileSync(path.join(__dirname, "fmv-values.json"), "utf8")); } catch { FMV = null; } }
+  return FMV;
+}
+const aiOf = (id) => { const r = fmv()?.p?.[String(id)]; return r ? { mv: r[0] * 1e3, lo: r[1] * 1e3, hi: r[2] * 1e3 } : null; };
+const fmvMeta = () => fmv() && { asOf: fmv().asOf, model: fmv().model };
+async function playerAi(id) {
+  const r = fmv()?.p?.[String(id)];
+  if (!r) throw new HttpErr(404, "Brak wyceny AI dla tego zawodnika");
+  const e = (await tmEntities("/players", [id]).catch(() => ({})))[String(id)] || {}, mvd = e.marketValueDetails?.current;
+  const K = (v) => (v == null ? null : v * 1e3);
+  return { id: String(id), name: e.name || String(id), age: e.lifeDates?.age ?? null, position: e.attributes?.position?.name || null,
+    tm: mvd?.value ?? mvd?.amount ?? null, contract: e.attributes?.contractUntil || null, ...fmvMeta(),
+    mv: K(r[0]), lo: K(r[1]), hi: K(r[2]), tv: K(r[3]), tvLo: K(r[4]), tvHi: K(r[5]), forecast: { 6: K(r[6]), 12: K(r[7]), 24: K(r[8]) },
+    quality: r[9], uncertainty: r[10], summary: r[11], factors: r[12].map(([f, v]) => ({ factor: f, pct: v })), history: r[13].map(([y, v]) => ({ year: y, mv: K(v) })) };
+}
+async function valuesRoute() { // wszyscy zawodnicy drużyn z bieżących rozgrywek, którzy mają wycenę AI
+  const st = CS();
+  if (st.VAL && Date.now() - st.VAL.at < 6 * HOUR) return st.VAL.data;
+  if (st.VALp) return st.VALp;
+  st.VALp = (async () => {
+    if (!fmv()) throw new HttpErr(503, "Brak pliku z wycenami AI");
+    const season = await tmSeason(), table = await tmTable(season);
+    const clubs = table.map((r) => ({ id: r.team.id.replace("tm-", ""), name: r.team.name }));
+    const squads = await pool(clubs, 6, (c) => tmCall(`/club/${c.id}/squad`, 12 * HOUR).catch(() => null));
+    const members = clubs.flatMap((c, i) => (squads[i]?.squad || []).filter((m) => m.type === "current" || !m.type).map((m) => ({ pid: String(m.playerId), club: c })));
+    const valued = members.filter((m) => fmv().p[m.pid]);
+    const ents = await tmEntities("/players", valued.map((m) => m.pid));
+    const players = valued.map(({ pid, club }) => {
+      const e = ents[pid] || {}, mvd = e.marketValueDetails?.current, a = aiOf(pid);
+      return { id: pid, name: e.name || pid, club: club.name, clubId: club.id, pos: POS_PL[e.attributes?.positionGroup] || "Inni",
+        age: e.lifeDates?.age ?? null, tm: mvd?.value ?? mvd?.amount ?? null, ai: a.mv, lo: a.lo, hi: a.hi };
+    });
+    const data = { ...fmvMeta(), clubs: clubs.length, squadPlayers: members.length, players };
+    st.VAL = { at: Date.now(), data };
+    return data;
+  })().finally(() => { st.VALp = null; });
+  return st.VALp;
+}
+
 const teamMemo = new Map();
 function tmTeam(clubId, season) {
   const tk = comp() + ":" + clubId, hit = teamMemo.get(tk);
@@ -523,7 +565,7 @@ function tmTeam(clubId, season) {
       const p = pl[m.playerId] || {}, mv = p.marketValueDetails?.current;
       return { id: String(m.playerId), name: p.name || String(m.playerId), shirt: m.shirtNumber, captain: !!m.isCaptain,
         position: POS_PL[p.attributes?.positionGroup] || "Inni", detail: p.attributes?.position?.name || "", age: p.lifeDates?.age ?? null,
-        contract: p.attributes?.contractUntil || null, value: mv?.value ?? mv?.amount ?? null };
+        contract: p.attributes?.contractUntil || null, value: mv?.value ?? mv?.amount ?? null, ai: aiOf(m.playerId) };
     }).sort((a, b) => (b.value || 0) - (a.value || 0));
     // niedostępni: sprawdzamy 22 najcenniejszych zawodników (kontuzje + zawieszenia), wynik w cache na 4 h
     const today = todayIso(), tops = squad.slice(0, 22);
@@ -585,7 +627,7 @@ async function teamPage(clubId) {
   const info = await tmTeam(clubId, season);
   const profile = CS().GAMES.running ? null : leagueProfiles(season).teams.find((t) => t.id === P + clubId) || null;
   return { profile, profileProgress: { done: CS().GAMES.done, total: CS().GAMES.total }, team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
-    stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, note: seasonNote(season) };
+    stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, fmv: fmvMeta(), note: seasonNote(season) };
 }
 
 // ---------- analiza AI na danych z Flashscore (wszystko z danych sezonu – 0 dodatkowych zapytań) ----------
@@ -1025,6 +1067,8 @@ async function route(p) {
     return { status: 200, data: out };
   }
   if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
+  if (p === "/api/values") return { status: 200, data: await valuesRoute() };
+  if ((m = p.match(/^\/api\/player-ai\/(\d+)$/))) return { status: 200, data: await playerAi(m[1]) };
   return { status: 404, data: { error: "Nieznany endpoint" } };
 }
 

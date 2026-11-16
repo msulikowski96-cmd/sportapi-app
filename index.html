@@ -96,6 +96,19 @@
   .bd.cr img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
   .tnm { display:inline-flex; align-items:center; gap:5px; vertical-align:middle; white-space:nowrap; } .tnm .bd { vertical-align:middle; }
   .fl { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12.5px; color:var(--mut); margin-top:4px; } .fl b { color:var(--txt); font-family:var(--head); font-size:15px; }
+  .aiv { font-size:11.5px; color:var(--mut); margin-top:1px; white-space:nowrap; } .aiv.up { color:var(--acc); } .aiv.dn { color:var(--red); }
+  .pl[data-pl], .ld[data-pl] { cursor:pointer; } .pl[data-pl]:hover, .ld[data-pl]:hover { background:rgba(255,255,255,.03); }
+  .sheet { position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.6); display:flex; align-items:flex-end; justify-content:center; }
+  .sheet .sb2 { background:var(--bg); border:1px solid var(--line); border-radius:20px 20px 0 0; width:100%; max-width:640px; max-height:88vh; overflow:auto; padding:18px 16px 28px; }
+  @media (min-width:760px) { .sheet { align-items:center; } .sheet .sb2 { border-radius:20px; } }
+  .sheet .x { float:right; background:var(--s1); border:1px solid var(--line); color:var(--txt); border-radius:99px; width:34px; height:34px; font-size:16px; cursor:pointer; }
+  .sheet .kpis { grid-template-columns:repeat(4,1fr); } .sheet .kpi b { font-size:19px; } .sheet .kpis.k3 { grid-template-columns:repeat(3,1fr); }
+  @media (max-width:520px) { .sheet .kpis { grid-template-columns:repeat(2,1fr); } }
+  .rng { position:relative; height:10px; border-radius:99px; background:linear-gradient(90deg,rgba(52,211,153,.12),rgba(52,211,153,.35),rgba(52,211,153,.12)); margin:26px 0 22px; }
+  .rng .mk { position:absolute; top:-6px; width:3px; height:22px; border-radius:2px; transform:translateX(-50%); }
+  .rng .mk span { position:absolute; top:-18px; left:50%; transform:translateX(-50%); font-size:11px; white-space:nowrap; }
+  .rng .mk.b span { top:24px; }
+  .fc { display:grid; grid-template-columns:1fr 80px 52px; gap:8px; align-items:center; font-size:13px; padding:4px 0; } .fc .bar { height:7px; border-radius:99px; background:var(--s1); position:relative; overflow:hidden; } .fc .bar i { position:absolute; top:0; bottom:0; }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
 </style>
 </head>
@@ -150,6 +163,8 @@ function crestsFor(c) { // herby rozgrywek; po wczytaniu dorysowują się też w
 }
 async function loadCrests() { await crestsFor(COMP); setTimeout(() => Object.keys(COMPS).forEach(crestsFor), 2500); }
 const fmtV = (f, x) => x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10) : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2);
+const aiCls = (ai, tm) => !ai || !tm ? "" : ai / tm >= 1.25 ? "up" : ai / tm <= 0.8 ? "dn" : "";
+const pctS = (a, b) => (a >= b ? "+" : "") + Math.round((a / b - 1) * 100) + "%";
 const mlnE = (v) => v == null ? "–" : v >= 1e6 ? (Math.round(v / 1e5) / 10) + " mln €" : Math.round(v / 1e3) + " tys. €";
 
 function matchRow(e) {
@@ -215,12 +230,13 @@ async function showDay(why) {
   } catch (e2) { app.innerHTML = `<p class="err">${esc(why || e2.message)}</p><p class="mini">Tryb zastępczy też niedostępny: ${esc(e2.message)}</p>`; }
 }
 
-const TAB_MODES = [["all", "Ogółem"], ["home", "U siebie"], ["away", "Na wyjeździe"], ["form", "Forma (5)"], ["scorers", "Strzelcy"], ["assists", "Asysty"], ["cards", "Kartki"]];
+const TAB_MODES = [["all", "Ogółem"], ["home", "U siebie"], ["away", "Na wyjeździe"], ["form", "Forma (5)"], ["scorers", "Strzelcy"], ["assists", "Asysty"], ["cards", "Kartki"], ["values", "Wyceny AI"]];
 const pills = () => `<div class="pills">${TAB_MODES.map(([k, t]) => `<button data-m="${k}" class="${k === tabMode ? "on" : ""}">${t}</button>`).join("")}</div>`;
 function bindPills() { document.querySelectorAll(".pills button").forEach((b) => b.onclick = () => { tabMode = b.dataset.m; showTable(); }); }
 async function showTable() {
   clearTimeout(timer); clearInterval(timer); timer = null;
   if (["scorers", "assists", "cards"].includes(tabMode)) return showLeaders();
+  if (tabMode === "values") return showValues();
   loading();
   try {
     const tb = await api(tabMode === "all" ? "/api/table" : `/api/table/${tabMode}`), rows = tb.standings[0].rows, n = rows.length;
@@ -248,6 +264,58 @@ async function showLeaders() {
     bindPills();
   } catch (e) { app.innerHTML = pills() + `<p class="err">${esc(e.message)}</p>`; bindPills(); }
 }
+
+let valMode = "top";
+async function showValues() {
+  try {
+    app.innerHTML = pills() + `<div class="card"><b>Zbieram kadry wszystkich drużyn…</b><p class="mini" style="margin:4px 0 0">Pierwsze wczytanie trwa kilkanaście sekund.</p></div>`; bindPills();
+    const d = await api("/api/values");
+    if (tabMode !== "values" || view !== "table") return;
+    const sub = [["top", "Najwyżej wyceniani"], ["under", "AI wyżej niż Transfermarkt"], ["over", "AI niżej niż Transfermarkt"]];
+    const lr = (p) => Math.log(p.ai / p.tm);
+    let list = d.players;
+    if (valMode === "top") list = [...list].sort((a, b) => b.ai - a.ai);
+    else { list = list.filter((p) => p.tm >= 500000 && (valMode === "under" ? p.ai > p.tm && (p.age ?? 0) < 33 : p.ai < p.tm)); list.sort((a, b) => valMode === "under" ? lr(b) - lr(a) : lr(a) - lr(b)); }
+    list = list.slice(0, 50);
+    app.innerHTML = pills() + `<div class="pills" style="margin-top:-4px">${sub.map(([k, t]) => `<button data-v2="${k}" class="${k === valMode ? "on" : ""}">${t}</button>`).join("")}</div>
+      <div class="card" style="padding:6px 14px">${list.map((p, i) => `<div class="ld" data-pl="${p.id}"><span class="r">${i + 1}</span><div style="display:flex;gap:10px;align-items:center">${badge(p.club, 28)}<div>${esc(p.name)}<div class="mini">${esc(p.club)} · ${esc(p.pos)}${p.age ? " · " + p.age + " l." : ""}</div></div></div><div style="text-align:right"><b style="font-size:19px">${mlnE(p.ai)}</b><div class="aiv ${aiCls(p.ai, p.tm)}">TM ${mlnE(p.tm)}${p.tm ? " · " + pctS(p.ai, p.tm) : ""}</div></div></div>`).join("") || `<p class="mut">Brak zawodników z wyceną AI w tych rozgrywkach.</p>`}</div>
+      <p class="mini">Wycena AI dla ${d.players.length} z ${d.squadPlayers} zawodników z kadr ${d.clubs} drużyn. Model wycenia zawodników 8 lig (Anglia, Hiszpania, Niemcy, Włochy, Francja, Portugalia, Holandia, Polska), dane do ${fmtDate(d.asOf)}. To eksperyment: mediana błędu na ${d.model.n_test} transferach testowych wynosi ${Math.round(d.model.mv_median_ape * 100)}%, więc wyceny Transfermarkt są zwykle trafniejsze.${valMode === "under" ? " Pomijamy zawodników od 33 lat, bo model wyraźnie ich przeszacowuje." : ""}</p>`;
+    bindPills(); document.querySelectorAll("[data-v2]").forEach((b) => b.onclick = () => { valMode = b.dataset.v2; showValues(); });
+  } catch (e) { app.innerHTML = pills() + `<p class="err">${esc(e.message)}</p>`; bindPills(); }
+}
+const POS_N = { Goalkeeper: "bramkarz", "Centre-Back": "środkowy obrońca", "Left-Back": "lewy obrońca", "Right-Back": "prawy obrońca", "Defensive Midfield": "defensywny pomocnik",
+  "Central Midfield": "środkowy pomocnik", "Attacking Midfield": "ofensywny pomocnik", "Left Midfield": "lewy pomocnik", "Right Midfield": "prawy pomocnik", "Left Winger": "lewy skrzydłowy",
+  "Right Winger": "prawy skrzydłowy", "Centre-Forward": "środkowy napastnik", "Second Striker": "cofnięty napastnik" };
+const fmtDate = (iso) => iso ? new Date(String(iso).slice(0, 10) + "T12:00:00").toLocaleDateString("pl-PL", { day: "numeric", month: "long", year: "numeric" }) : "–";
+
+async function openPlayerAi(id) {
+  const sh = document.createElement("div"); sh.className = "sheet";
+  sh.innerHTML = `<div class="sb2"><button class="x" aria-label="Zamknij">✕</button><p class="mut">Wczytuję wycenę…</p></div>`;
+  const close = () => { sh.remove(); document.body.style.overflow = ""; document.removeEventListener("keydown", esc_); };
+  const esc_ = (e) => { if (e.key === "Escape") close(); };
+  sh.onclick = (e) => { if (e.target === sh || e.target.closest(".x")) close(); };
+  document.addEventListener("keydown", esc_); document.body.style.overflow = "hidden"; document.body.appendChild(sh);
+  try {
+    const d = await api(`/api/player-ai/${id}`);
+    const lo = Math.min(d.lo, d.tm || d.lo), hi = Math.max(d.hi, d.tm || d.hi), X = (v) => Math.max(0, Math.min(100, (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo) || 1) * 100));
+    const lab = (v) => X(v) < 15 ? "left:0;transform:none" : X(v) > 85 ? "left:auto;right:0;transform:none" : "";
+    const unc = { low: "niska", medium: "średnia", high: "wysoka" }[d.uncertainty] || d.uncertainty;
+    const fmax = Math.max(1, ...d.factors.map((f) => Math.abs(f.pct)));
+    const hist = [...d.history, { year: +d.asOf.slice(0, 4), mv: d.mv, now: 1 }], hmax = Math.max(...hist.map((x) => x.mv));
+    sh.querySelector(".sb2").innerHTML = `<button class="x" aria-label="Zamknij">✕</button>
+      <h2 style="margin:0">${esc(d.name)}</h2><div class="mini">${[POS_N[d.position] || d.position, d.age && d.age + " l.", d.contract && "kontrakt do " + fmtDate(d.contract)].filter(Boolean).map(esc).join(" · ")}</div>
+      <div class="kpis" style="margin-top:14px"><div class="kpi"><b>${mlnE(d.mv)}</b><span>wycena AI</span></div><div class="kpi"><b>${mlnE(d.tm)}</b><span>Transfermarkt</span></div><div class="kpi"><b>${mlnE(d.tv)}</b><span>kwota transferu</span></div><div class="kpi"><b>${d.quality}%</b><span>jakość danych</span></div></div>
+      <h3>Przedział 80% wyceny AI</h3>
+      <div class="rng"><div class="mk" style="left:${X(d.mv)}%;background:var(--acc)"><span style="color:var(--acc);${lab(d.mv)}">AI ${mlnE(d.mv)}</span></div>${d.tm ? `<div class="mk b" style="left:${X(d.tm)}%;background:#60a5fa"><span style="color:#60a5fa;${lab(d.tm)}">TM ${mlnE(d.tm)}</span></div>` : ""}</div>
+      <div class="mini" style="display:flex;justify-content:space-between"><span>${mlnE(d.lo)}</span><span>niepewność: ${unc}</span><span>${mlnE(d.hi)}</span></div>
+      <h3>Prognoza wartości</h3><div class="kpis k3">${[6, 12, 24].map((m) => `<div class="kpi"><b>${mlnE(d.forecast[m])}</b><span>za ${m} mies. · <span class="aiv ${aiCls(d.forecast[m], d.mv)}" style="display:inline">${pctS(d.forecast[m], d.mv)}</span></span></div>`).join("")}</div>
+      ${d.history.length ? `<h3>Wycena AI w kolejnych latach</h3><div style="display:flex;gap:8px;align-items:flex-end;height:110px">${hist.map((x) => `<div style="flex:1;text-align:center"><div class="mini" style="font-size:10.5px">${(x.mv / 1e6).toFixed(x.mv < 1e7 ? 1 : 0).replace(".", ",")}</div><div style="height:${Math.max(4, (x.mv / hmax) * 70)}px;border-radius:6px 6px 0 0;background:${x.now ? "var(--acc)" : "rgba(52,211,153,.35)"}"></div><div class="mini">${x.year}</div></div>`).join("")}</div><p class="mini" style="margin:4px 0 0">w mln € · stan na połowę czerwca</p>` : ""}
+      <h3>Co podnosi i obniża wycenę</h3>${d.factors.map((f) => `<div class="fc"><span>${esc(f.factor)}</span><div class="bar"><i style="${f.pct >= 0 ? "left:0" : "right:0"};width:${(Math.abs(f.pct) / fmax) * 100}%;background:${f.pct >= 0 ? "var(--acc)" : "var(--red)"}"></i></div><b style="text-align:right;color:${f.pct >= 0 ? "var(--acc)" : "var(--red)"}">${f.pct > 0 ? "+" : ""}${f.pct}%</b></div>`).join("")}
+      <p style="font-size:13.5px;line-height:1.5;margin-top:14px">${esc(d.summary)}</p>
+      <p class="mini">Wycena modelu AI (projekt Football Market Value), dane do ${fmtDate(d.asOf)}. Model uczył się na prawdziwych kwotach transferów. Na ${d.model.n_test} transferach testowych mediana błędu wynosi ${Math.round(d.model.mv_median_ape * 100)}% (kwota transferu: ${Math.round((d.model.tv_median_ape || 0) * 100)}%), więc to ciekawostka, a nie pewna cena.</p>`;
+  } catch (e) { sh.querySelector(".sb2").innerHTML = `<button class="x" aria-label="Zamknij">✕</button><p class="err">${esc(e.message)}</p>`; }
+}
+document.addEventListener("click", (e) => { const el = e.target.closest("[data-pl]"); if (el) openPlayerAi(el.dataset.pl); });
 
 function incLine(i) {
   const home = i.isHome === true; let txt = null;
@@ -388,7 +456,8 @@ async function openTeam(id) {
     }
     if (d.unavailable.length) h += `<div class="card"><h3 style="margin-top:0">Niedostępni</h3>` + d.unavailable.map((u) => `<div style="padding:3px 0"><span class="tag ${u.type === "zawieszenie" ? "sus" : "inj"}">${u.type}</span>${esc(u.name)} <span class="mini">– ${esc(u.reason)}${u.until ? ", do " + esc(u.until) : ", brak daty powrotu"}</span></div>`).join("") + `</div>`;
     if (d.scorers.length) h += `<div class="card"><h3 style="margin-top:0">Najlepsi strzelcy w lidze</h3>` + d.scorers.map((s) => `<div class="pl" style="grid-template-columns:1fr auto"><div>${esc(s.name)}</div><div class="v">${s.goals} goli · ${s.assists} asyst</div></div>`).join("") + `</div>`;
-    h += `<div class="card"><h3 style="margin-top:0">Kadra · wartość ${mlnE(d.squadValue)}</h3>` + order.filter((g) => groups[g]).map((g) => `<div class="mini" style="margin-top:10px;text-transform:uppercase;letter-spacing:.08em">${g}</div>` + groups[g].map((x) => `<div class="pl"><div class="mut">${x.shirt ?? ""}</div><div>${esc(x.name)}${x.captain ? " ©" : ""} <span class="mini">${esc(x.age ? x.age + " l." : "")}</span></div><div class="v">${mlnE(x.value)}</div></div>`).join("")).join("") + `</div>`;
+    const nAi = d.squad.filter((x) => x.ai).length;
+    h += `<div class="card"><h3 style="margin-top:0">Kadra · wartość ${mlnE(d.squadValue)}</h3>${nAi ? `<p class="mini" style="margin:-4px 0 4px">Pod kwotą Transfermarkt: wycena modelu AI (${nAi} z ${d.squad.length} zawodników). Zielona – AI wycenia wyraźnie wyżej, czerwona – niżej. Kliknij zawodnika, by zobaczyć szczegóły.</p>` : ""}` + order.filter((g) => groups[g]).map((g) => `<div class="mini" style="margin-top:10px;text-transform:uppercase;letter-spacing:.08em">${g}</div>` + groups[g].map((x) => `<div class="pl"${x.ai ? ` data-pl="${x.id}"` : ""}><div class="mut">${x.shirt ?? ""}</div><div>${esc(x.name)}${x.captain ? " ©" : ""} <span class="mini">${esc(x.age ? x.age + " l." : "")}</span></div><div class="v" style="text-align:right">${mlnE(x.value)}${x.ai ? `<div class="aiv ${aiCls(x.ai.mv, x.value)}">AI ${mlnE(x.ai.mv)}</div>` : ""}</div></div>`).join("")).join("") + `</div>`;
     app.innerHTML = h + `<p class="mini">Źródło: Transfermarkt (wartości rynkowe, kontuzje, statystyki meczów). Kontuzje i zawieszenia sprawdzane dla 22 najcenniejszych zawodników.</p>`;
     $("#bk").onclick = () => go("teams");
     if ($("#aigo")) $("#aigo").onclick = () => runAi(id);

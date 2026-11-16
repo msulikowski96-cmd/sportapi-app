@@ -94,6 +94,8 @@
   @media (max-width:620px) { header { flex-wrap:wrap; } .cs { margin-left:0; width:100%; } .cs button { flex:1; padding:7px 6px; } .cs .f { display:none; } .cs .s { display:inline; } }
   .bd.cr { position:relative; background:none; box-shadow:none; color:transparent; border-radius:0; }
   .bd.cr img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+  .tnm { display:inline-flex; align-items:center; gap:5px; vertical-align:middle; white-space:nowrap; } .tnm .bd { vertical-align:middle; }
+  .fl { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12.5px; color:var(--mut); margin-top:4px; } .fl b { color:var(--txt); font-family:var(--head); font-size:15px; }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
 </style>
 </head>
@@ -121,7 +123,7 @@ function setComp(c, reload = true) {
   document.body.dataset.c = c; $("#cname").textContent = COMPS[c].name; $("#logo").textContent = COMPS[c].logo;
   document.querySelectorAll("#cs button").forEach((b) => b.classList.toggle("on", b.dataset.c === c));
   const u = new URL(location.href); if (c === "PL1") u.searchParams.delete("c"); else u.searchParams.set("c", c); history.replaceState(null, "", u);
-  if (reload) { round = null; curRound = null; maxRound = COMPS[c].rounds; cmpA = cmpB = null; dayOff = 0; go(view); }
+  if (reload) { round = null; curRound = null; maxRound = COMPS[c].rounds; cmpA = cmpB = null; dayOff = 0; loading(); crestsFor(c).finally(() => { if (COMP === c) go(view); }); }
 }
 
 async function api(p) {
@@ -135,13 +137,18 @@ const fail = (e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; };
 const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 const initials = (n) => String(n).replace(/[^\p{L} ]/gu, "").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 const CREST = {};
+const crestImg = (c) => `<img src="${esc(c)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.classList.remove('cr');this.remove()">`;
 const badge = (n, sz = 28) => { const c = CREST[n];
-  return `<span class="bd${c ? " cr" : ""}" style="--h:${hue(n)};width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.4)}px">${esc(initials(n))}${c ? `<img src="${esc(c)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.classList.remove('cr');this.remove()">` : ""}</span>`; };
-async function loadCrests() { // herby: najpierw bieżące rozgrywki (strona czeka max 5 s), pozostałe w tle
-  const one = (c) => fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : {}).then((m) => Object.assign(CREST, m)).catch(() => {});
-  const rest = () => Object.keys(COMPS).filter((c) => c !== COMP).forEach(one);
-  await Promise.race([one(COMP), new Promise((r) => setTimeout(r, 5000))]); setTimeout(rest, 3000);
+  return `<span class="bd${c ? " cr" : ""}" data-n="${esc(n)}" style="--h:${hue(n)};width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.4)}px">${esc(initials(n))}${c ? crestImg(c) : ""}</span>`; };
+const tn = (n, sz = 18) => `<span class="tnm">${badge(n, sz)}${esc(n)}</span>`; // herb + nazwa w tekście
+function applyCrests() { document.querySelectorAll(".bd:not(.cr)[data-n]").forEach((el) => { const c = CREST[el.dataset.n]; if (c && !el.querySelector("img")) { el.classList.add("cr"); el.insertAdjacentHTML("beforeend", crestImg(c)); } }); }
+const crestJobs = {};
+function crestsFor(c) { // herby rozgrywek; po wczytaniu dorysowują się też w już widocznych miejscach
+  if (!crestJobs[c]) crestJobs[c] = fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : Promise.reject()).then((m) => { Object.assign(CREST, m); applyCrests(); })
+    .catch(() => { delete crestJobs[c]; });
+  return Promise.race([crestJobs[c], new Promise((r) => setTimeout(r, 4000))]);
 }
+async function loadCrests() { await crestsFor(COMP); setTimeout(() => Object.keys(COMPS).forEach(crestsFor), 2500); }
 const fmtV = (f, x) => x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10) : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2);
 const mlnE = (v) => v == null ? "–" : v >= 1e6 ? (Math.round(v / 1e5) / 10) + " mln €" : Math.round(v / 1e3) + " tys. €";
 
@@ -289,10 +296,10 @@ async function showPreview(id, tries = 0) {
       h += `<h3>Jak grają – zestawienie</h3>${cmpRows(defs, A, B)}<div class="grid2" style="margin-top:10px"><div>${A.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><div style="text-align:right">${B.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div></div>
         <div class="mini">Wartości to średnie z meczów tego sezonu. Zielona wartość = lepszy wynik w danej kategorii.</div>`;
     } else if (P && !P.ready) h += `<p class="mini">Liczę profile drużyn z ${P.progress.total} meczów…</p>`;
-    h += `<h3>Niedostępni zawodnicy</h3><div class="grid2 stack"><div><b style="font-size:13px">${esc(hn)}</b><br>${unav(d.home)}</div><div><b style="font-size:13px">${esc(an)}</b><br>${unav(d.away)}</div></div>`;
-    h += `<h3>Najlepsi strzelcy</h3><div class="grid2 stack"><div>${sc(d.home)}</div><div>${sc(d.away)}</div></div>`;
-    h += `<h3>Mecze bezpośrednie w sezonie</h3>` + (d.h2h.length ? d.h2h.map((x) => `<div class="vs"><span style="text-align:right">${esc(x.home)}</span><span class="mid">${esc(x.score)}</span><span>${esc(x.away)}</span></div>`).join("") : `<span class="mini">Jeszcze się nie spotkały w tym sezonie.</span>`);
-    h += `<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap"><button class="btn" data-open="${d.home.id}">Profil: ${esc(hn)}</button><button class="btn" data-open="${d.away.id}">Profil: ${esc(an)}</button></div></div>` + note(d);
+    h += `<h3>Niedostępni zawodnicy</h3><div class="grid2 stack"><div><b style="font-size:13px">${tn(hn)}</b><br>${unav(d.home)}</div><div><b style="font-size:13px">${tn(an)}</b><br>${unav(d.away)}</div></div>`;
+    h += `<h3>Najlepsi strzelcy</h3><div class="grid2 stack"><div><b style="font-size:13px">${tn(hn)}</b>${sc(d.home)}</div><div><b style="font-size:13px">${tn(an)}</b>${sc(d.away)}</div></div>`;
+    h += `<h3>Mecze bezpośrednie w sezonie</h3>` + (d.h2h.length ? d.h2h.map((x) => `<div class="vs"><span style="text-align:right">${esc(x.home)} ${badge(x.home, 18)}</span><span class="mid">${esc(x.score)}</span><span>${badge(x.away, 18)} ${esc(x.away)}</span></div>`).join("") : `<span class="mini">Jeszcze się nie spotkały w tym sezonie.</span>`);
+    h += `<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap"><button class="btn" data-open="${d.home.id}">Profil: ${tn(hn)}</button><button class="btn" data-open="${d.away.id}">Profil: ${tn(an)}</button></div></div>` + note(d);
     app.innerHTML = h; $("#bk").onclick = () => go(view);
     document.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openTeam(b.dataset.open));
     if ((d.loading || (P && !P.ready)) && tries < 5) setTimeout(() => { if ($("#bk") && document.querySelector(".big")) showPreview(id, tries + 1); }, 6000);
@@ -352,8 +359,8 @@ async function openTeam(id) {
       <div class="mini">${[d.coach && "Trener: " + esc(d.coach), d.stadium?.name && esc(d.stadium.name) + (d.stadium.capacity ? " (" + d.stadium.capacity.toLocaleString("pl-PL") + " miejsc)" : "")].filter(Boolean).join(" · ")}</div></div></div>
       <div class="kpis"><div class="kpi"><b>${t.position}.</b><span>miejsce</span></div><div class="kpi"><b>${t.points}</b><span>punkty</span></div><div class="kpi"><b>${t.wins}-${t.draws}-${t.losses}</b><span>Z-R-P</span></div><div class="kpi"><b>${t.scoresFor}:${t.scoresAgainst}</b><span>bramki</span></div></div>
       <h3>Forma (od najstarszego)</h3><div class="chips">${[...d.form].reverse().map((m) => `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div>
-      <div class="mini">${[...d.form].reverse().map((m) => `${m.home ? "d" : "w"} ${esc(m.opponent)} ${m.gf}:${m.ga}`).join(" · ")}</div>`;
-    if (d.next) h += `<div class="nm" style="margin-top:12px">Następny mecz: <b style="color:var(--txt)">${d.next.home ? esc(d.team.name) : esc(d.next.opponent)} – ${d.next.home ? esc(d.next.opponent) : esc(d.team.name)}</b> · kolejka ${d.next.round ?? "?"}, ${esc(fmtDay(d.next.date))} ${fmtTime(d.next.date)}</div>`;
+      <div class="fl">${[...d.form].reverse().map((m) => `<span>${m.home ? "d" : "w"} ${tn(m.opponent, 16)} <b>${m.gf}:${m.ga}</b></span>`).join("")}</div>`;
+    if (d.next) h += `<div class="nm" style="margin-top:12px">Następny mecz: <b style="color:var(--txt)">${d.next.home ? tn(d.team.name) : tn(d.next.opponent)} – ${d.next.home ? tn(d.next.opponent) : tn(d.team.name)}</b> · kolejka ${d.next.round ?? "?"}, ${esc(fmtDay(d.next.date))} ${fmtTime(d.next.date)}</div>`;
     h += `</div>`;
     if (!p) h += `<div class="card"><b>Liczę profil gry z ${d.profileProgress.total || "…"} meczów…</b><div class="prog"><i style="width:${Math.round((d.profileProgress.done / (d.profileProgress.total || 1)) * 100)}%"></i></div><p class="mini" style="margin:0">Pierwsze liczenie trwa kilkanaście sekund, potem dane są w pamięci.</p></div>`;
     else {
@@ -412,13 +419,14 @@ async function showCompare() {
     const teams = [...P.teams].sort((a, b) => a.name.localeCompare(b.name, "pl"));
     cmpA = cmpA && teams.some((t) => t.id === cmpA) ? cmpA : teams[0].id; cmpB = cmpB && teams.some((t) => t.id === cmpB) ? cmpB : teams[1].id;
     const opt = (sel) => teams.map((t) => `<option value="${t.id}" ${t.id === sel ? "selected" : ""}>${esc(t.name)}</option>`).join("");
-    app.innerHTML = `<p class="hello">Zestaw dwie drużyny i zobacz, czym się różnią w grze.</p><div class="card"><div class="row2"><select id="ca">${opt(cmpA)}</select><span class="mut">vs</span><select id="cb">${opt(cmpB)}</select></div></div><div id="cres"></div>`;
-    const sw = (T) => `<h3 style="margin-top:0;color:var(--acc)">${esc(T.name)} – mocne</h3><ul class="sw g">${T.strengths.slice(0, 3).map((s) => `<li>${esc(s.split(" — ")[0])}</li>`).join("") || "<li>–</li>"}</ul><h3 style="color:var(--red)">Słabe</h3><ul class="sw w">${T.weaknesses.slice(0, 3).map((s) => `<li>${esc(s.split(" — ")[0])}</li>`).join("") || "<li>–</li>"}</ul>`;
+    app.innerHTML = `<p class="hello">Zestaw dwie drużyny i zobacz, czym się różnią w grze.</p><div class="card"><div class="row2"><span id="ba"></span><select id="ca">${opt(cmpA)}</select><span class="mut">vs</span><select id="cb">${opt(cmpB)}</select><span id="bb"></span></div></div><div id="cres"></div>`;
+    const sw = (T) => `<h3 style="margin-top:0;color:var(--acc)">${tn(T.name, 20)} – mocne</h3><ul class="sw g">${T.strengths.slice(0, 3).map((s) => `<li>${esc(s.split(" — ")[0])}</li>`).join("") || "<li>–</li>"}</ul><h3 style="color:var(--red)">Słabe</h3><ul class="sw w">${T.weaknesses.slice(0, 3).map((s) => `<li>${esc(s.split(" — ")[0])}</li>`).join("") || "<li>–</li>"}</ul>`;
     const draw = () => { cmpA = $("#ca").value; cmpB = $("#cb").value; const A = teams.find((t) => t.id === cmpA), B = teams.find((t) => t.id === cmpB);
+      $("#ba").innerHTML = badge(A.name, 30); $("#bb").innerHTML = badge(B.name, 30);
       const gr = {}; for (const df of P.defs) (gr[df.group] ||= []).push(df);
       $("#cres").innerHTML = `<div class="card"><div class="big"><div class="t">${badge(A.name, 48)}<div class="n">${esc(A.name)}</div></div><div class="s" style="font-size:22px;color:var(--mut)">vs</div><div class="t">${badge(B.name, 48)}<div class="n">${esc(B.name)}</div></div></div>
         <div class="grid2" style="margin-top:10px"><div>${A.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join("")}</div><div style="text-align:right">${B.tags.map((x) => `<span class="tag">${esc(x)}</span>`).join("")}</div></div>
-        ${A.radar && B.radar ? `<div style="margin-top:8px">${radarSvg([{ label: A.name, color: "#34d399", vals: A.radar }, { label: B.name, color: "#60a5fa", vals: B.radar }])}<div class="legend" style="justify-content:center"><span><i style="background:#34d399"></i>${esc(A.name)}</span><span><i style="background:#60a5fa"></i>${esc(B.name)}</span></div></div>` : ""}</div>`
+        ${A.radar && B.radar ? `<div style="margin-top:8px">${radarSvg([{ label: A.name, color: "#34d399", vals: A.radar }, { label: B.name, color: "#60a5fa", vals: B.radar }])}<div class="legend" style="justify-content:center"><span><i style="background:#34d399"></i>${tn(A.name, 16)}</span><span><i style="background:#60a5fa"></i>${tn(B.name, 16)}</span></div></div>` : ""}</div>`
         + Object.entries(gr).map(([g, ds]) => `<div class="card"><h3 style="margin-top:0">${esc(g)}</h3>${cmpRows(ds, A, B)}</div>`).join("")
         + `<div class="grid2 stack"><div class="card">${sw(A)}</div><div class="card">${sw(B)}</div></div><p class="mini">Zielona wartość = lepszy wynik w kategorii (cechy stylu, np. posiadanie, bez oceny). Średnie z meczów sezonu.</p>`; };
     $("#ca").onchange = draw; $("#cb").onchange = draw; draw();

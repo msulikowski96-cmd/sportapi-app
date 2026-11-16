@@ -91,6 +91,8 @@
   .cs button.on { background:var(--acc); color:#04251a; }
   body.cl .logo { background:linear-gradient(135deg,#60a5fa,#4338ca); }
   @media (max-width:520px) { header { flex-wrap:wrap; } .cs { margin-left:0; width:100%; } .cs button { flex:1; } }
+  .bd.cr { position:relative; background:none; box-shadow:none; color:transparent; border-radius:0; }
+  .bd.cr img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
 </style>
 </head>
@@ -130,7 +132,12 @@ const loading = (t = "Ładowanie…") => { app.innerHTML = `<p class="mut">${t}<
 const fail = (e) => { app.innerHTML = `<p class="err">${esc(e.message)}</p>`; };
 const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 const initials = (n) => String(n).replace(/[^\p{L} ]/gu, "").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
-const badge = (n, sz = 28) => `<span class="bd" style="--h:${hue(n)};width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.4)}px">${esc(initials(n))}</span>`;
+const CREST = {};
+const badge = (n, sz = 28) => { const c = CREST[n];
+  return `<span class="bd${c ? " cr" : ""}" style="--h:${hue(n)};width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.4)}px">${esc(initials(n))}${c ? `<img src="${esc(c)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.classList.remove('cr');this.remove()">` : ""}</span>`; };
+async function loadCrests() { // herby obu rozgrywek; strona nie czeka na nie dłużej niż 5 s
+  await Promise.race([Promise.all(["PL1", "CL"].map((c) => fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : {}).then((m) => Object.assign(CREST, m)).catch(() => {}))), new Promise((r) => setTimeout(r, 5000))]);
+}
 const fmtV = (f, x) => x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10) : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2);
 const mlnE = (v) => v == null ? "–" : v >= 1e6 ? (Math.round(v / 1e5) / 10) + " mln €" : Math.round(v / 1e3) + " tys. €";
 
@@ -424,7 +431,7 @@ document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.da
 document.querySelectorAll("#cs button").forEach((b) => b.onclick = () => { if (b.dataset.c !== COMP) setComp(b.dataset.c); });
 setComp(COMP, false);
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-go("live");
+loadCrests().finally(() => go("live"));
 </script>
 </body>
 </html>

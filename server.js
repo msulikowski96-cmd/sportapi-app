@@ -413,7 +413,7 @@ async function tmSeason() {
     const games = (fx?.fixtures || []).flatMap((d) => d.games || []);
     if (!games.length) throw new HttpErr(502, "Transfermarkt: pusty terminarz");
     const clubs = await tmEntities("/clubs", games.flatMap((g) => [g.homeClub?.clubId, g.awayClub?.clubId]));
-    const nm = (id) => ({ team_id: String(id), name: tmName(id, clubs[id]?.name), short_name: clubs[id]?.baseDetails?.abbreviation });
+    const nm = (id) => ({ team_id: String(id), name: tmName(id, clubs[id]?.name), short_name: clubs[id]?.baseDetails?.abbreviation, crest: clubs[id]?.crestUrl || null });
     const matches = games.map((g) => ({
       src: "tm", match_id: g.gameId, round: g.baseDetails?.gameDay ? `Kolejka ${g.baseDetails.gameDay}` : "Faza pucharowa",
       timestamp: Math.floor(Date.parse(g.baseDetails?.date?.dateTimeUTC) / 1000) || 0,
@@ -1015,6 +1015,11 @@ async function route(p) {
     return callApi(`/api/v1/event/${m[1]}/player/${m[2]}/heatmap`, 3600000);
   }
   if ((m = p.match(/^\/api\/profile-ai\/tm-(\d+)$/))) return { status: 200, data: await profileAi(m[1]) };
+  if (p === "/api/crests") { // herby klubów: nazwa -> adres obrazka (Transfermarkt)
+    const s = await tmSeason(), out = {};
+    for (const m of s.matches) for (const t of [m.home_team, m.away_team]) if (t.crest) out[t.name] = t.crest;
+    return { status: 200, data: out };
+  }
   if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
   return { status: 404, data: { error: "Nieznany endpoint" } };
 }

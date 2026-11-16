@@ -34,7 +34,7 @@ Aplikacja pokazuje, **jak grają drużyny** (nie jest narzędziem do typowania w
 - **Na żywo:** auto-odświeżanie, szacowana minuta, opcjonalne powiadomienia Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, test: `/api/telegram-test`).
 - **PWA:** manifest, service worker (API nie jest cache'owane), ikony. `/api/tick` budzi serwis (`deploy/tick.yml.example` – opcjonalny ping z GitHub Actions).
 
-## Liga Mistrzów
-Przełącznik w nagłówku (lub adres `/?c=CL`) pokazuje to samo dla Ligi Mistrzów: mecze, tabelę fazy ligowej, rankingi, profile gry drużyn, porównanie i opisy AI.
-Dane pochodzą z Transfermarkt (kod rozgrywek `CL`). API przyjmuje parametr `?c=PL1|CL` (domyślnie Ekstraklasa); zapasowe źródła (Flashscore, SportAPI7, API-Football) i Telegram działają tylko dla Ekstraklasy.
+## Puchary europejskie (Liga Mistrzów, Liga Europy, Liga Konferencji)
+Przełącznik w nagłówku (lub adres `/?c=CL`, `/?c=EL`, `/?c=UCOL`) pokazuje to samo dla pucharów europejskich: mecze, tabelę fazy ligowej, rankingi, profile gry drużyn, porównanie i opisy AI.
+Dane pochodzą z Transfermarkt (kody `CL`, `EL`, `UCOL`). API przyjmuje parametr `?c=PL1|CL|EL|UCOL` (domyślnie Ekstraklasa); zapasowe źródła (Flashscore, SportAPI7, API-Football) i Telegram działają tylko dla Ekstraklasy.
 Mecze fazy pucharowej trafiają do profili drużyn, ale nie mają numeru kolejki w widoku „Mecze”.

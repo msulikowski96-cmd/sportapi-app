@@ -20,7 +20,7 @@
   body { margin:0; font-family:var(--body); font-size:15px; line-height:1.45; background:var(--bg); color:var(--txt);
     background-image:radial-gradient(900px 400px at 50% -120px, rgba(52,211,153,.10), transparent); background-repeat:no-repeat; padding-bottom:calc(76px + env(safe-area-inset-bottom)); }
   h1,h2,h3,.num { font-family:var(--head); font-weight:600; letter-spacing:.01em; }
-  header { display:flex; align-items:center; gap:10px; padding:16px 18px 6px; max-width:880px; margin:0 auto; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:16px 18px 6px; max-width:880px; margin:0 auto; }
   .logo { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#34d399,#0f766e); display:grid; place-items:center; font-size:19px; }
   header h1 { margin:0; font-size:26px; line-height:1; text-transform:uppercase; } header h1 small { display:block; font-family:var(--body); font-size:11px; font-weight:500; color:var(--mut); text-transform:none; letter-spacing:.02em; margin-top:3px; }
   main { max-width:880px; margin:0 auto; padding:10px 16px 24px; }
@@ -89,15 +89,16 @@
   .cs { margin-left:auto; display:flex; background:var(--s1); border:1px solid var(--line); border-radius:99px; padding:3px; gap:2px; }
   .cs button { background:none; border:0; color:var(--mut); font:600 12px var(--body); padding:7px 12px; border-radius:99px; cursor:pointer; white-space:nowrap; }
   .cs button.on { background:var(--acc); color:#04251a; }
-  body.cl .logo { background:linear-gradient(135deg,#60a5fa,#4338ca); }
-  @media (max-width:520px) { header { flex-wrap:wrap; } .cs { margin-left:0; width:100%; } .cs button { flex:1; } }
+  body[data-c=CL] .logo { background:linear-gradient(135deg,#60a5fa,#4338ca); } body[data-c=EL] .logo { background:linear-gradient(135deg,#fb923c,#c2410c); } body[data-c=UCOL] .logo { background:linear-gradient(135deg,#a3e635,#3f6212); }
+  .cs .s { display:none; }
+  @media (max-width:620px) { header { flex-wrap:wrap; } .cs { margin-left:0; width:100%; } .cs button { flex:1; padding:7px 6px; } .cs .f { display:none; } .cs .s { display:inline; } }
   .bd.cr { position:relative; background:none; box-shadow:none; color:transparent; border-radius:0; }
   .bd.cr img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
 </style>
 </head>
 <body>
-<header><div class="logo" id="logo">⚽</div><h1><span id="cname">Ekstraklasa</span><small>jak grają drużyny: styl, mocne i słabe strony</small></h1><div class="cs" id="cs"><button data-c="PL1">Ekstraklasa</button><button data-c="CL">Liga Mistrzów</button></div></header>
+<header><div class="logo" id="logo">⚽</div><h1><span id="cname">Ekstraklasa</span><small>jak grają drużyny: styl, mocne i słabe strony</small></h1><div class="cs" id="cs"><button data-c="PL1">Ekstraklasa</button><button data-c="CL"><span class="f">Liga Mistrzów</span><span class="s">LM</span></button><button data-c="EL"><span class="f">Liga Europy</span><span class="s">LE</span></button><button data-c="UCOL"><span class="f">Liga Konferencji</span><span class="s">LKE</span></button></div></header>
 <nav id="nav">
   <button data-v="live" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4"/></svg>Na żywo</button>
   <button data-v="round"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Mecze</button>
@@ -112,14 +113,15 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":
 const fmtTime = (t) => new Date(t * 1000).toLocaleTimeString("pl-PL", { hour:"2-digit", minute:"2-digit" });
 const fmtDay = (t) => new Date(t * 1000).toLocaleDateString("pl-PL", { weekday:"long", day:"numeric", month:"long" });
 let view = "live", round = null, maxRound = 34, curRound = null, timer = null, tabMode = "all", cmpA = null, cmpB = null;
-const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", logo: "⚽" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", logo: "⭐" } };
+const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", logo: "⚽", rounds: 34 }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", logo: "⭐", rounds: 8 },
+  EL: { name: "Liga Europy", gen: "Ligi Europy", logo: "🏆", rounds: 8 }, UCOL: { name: "Liga Konferencji", gen: "Ligi Konferencji", logo: "🎖️", rounds: 6 } };
 let COMP = (() => { const q = new URLSearchParams(location.search).get("c"); let ls = null; try { ls = localStorage.getItem("comp"); } catch {} return COMPS[q] ? q : COMPS[ls] ? ls : "PL1"; })();
 function setComp(c, reload = true) {
   COMP = c; try { localStorage.setItem("comp", c); } catch {}
-  document.body.classList.toggle("cl", c === "CL"); $("#cname").textContent = COMPS[c].name; $("#logo").textContent = COMPS[c].logo;
+  document.body.dataset.c = c; $("#cname").textContent = COMPS[c].name; $("#logo").textContent = COMPS[c].logo;
   document.querySelectorAll("#cs button").forEach((b) => b.classList.toggle("on", b.dataset.c === c));
   const u = new URL(location.href); if (c === "PL1") u.searchParams.delete("c"); else u.searchParams.set("c", c); history.replaceState(null, "", u);
-  if (reload) { round = null; curRound = null; maxRound = c === "CL" ? 8 : 34; cmpA = cmpB = null; dayOff = 0; go(view); }
+  if (reload) { round = null; curRound = null; maxRound = COMPS[c].rounds; cmpA = cmpB = null; dayOff = 0; go(view); }
 }
 
 async function api(p) {
@@ -135,8 +137,10 @@ const initials = (n) => String(n).replace(/[^\p{L} ]/gu, "").split(" ").filter(B
 const CREST = {};
 const badge = (n, sz = 28) => { const c = CREST[n];
   return `<span class="bd${c ? " cr" : ""}" style="--h:${hue(n)};width:${sz}px;height:${sz}px;font-size:${Math.round(sz * 0.4)}px">${esc(initials(n))}${c ? `<img src="${esc(c)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.classList.remove('cr');this.remove()">` : ""}</span>`; };
-async function loadCrests() { // herby obu rozgrywek; strona nie czeka na nie dłużej niż 5 s
-  await Promise.race([Promise.all(["PL1", "CL"].map((c) => fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : {}).then((m) => Object.assign(CREST, m)).catch(() => {}))), new Promise((r) => setTimeout(r, 5000))]);
+async function loadCrests() { // herby: najpierw bieżące rozgrywki (strona czeka max 5 s), pozostałe w tle
+  const one = (c) => fetch(`/api/crests?c=${c}`).then((r) => r.ok ? r.json() : {}).then((m) => Object.assign(CREST, m)).catch(() => {});
+  const rest = () => Object.keys(COMPS).filter((c) => c !== COMP).forEach(one);
+  await Promise.race([one(COMP), new Promise((r) => setTimeout(r, 5000))]); setTimeout(rest, 3000);
 }
 const fmtV = (f, x) => x == null ? "–" : f === "pct" ? `${Math.round(x * 10) / 10}%` : f === "n0" ? String(Math.round(x * 10) / 10) : f === "n1" ? (Math.round(x * 10) / 10).toFixed(1) : (Math.round(x * 100) / 100).toFixed(2);
 const mlnE = (v) => v == null ? "–" : v >= 1e6 ? (Math.round(v / 1e5) / 10) + " mln €" : Math.round(v / 1e3) + " tys. €";
@@ -213,12 +217,12 @@ async function showTable() {
   loading();
   try {
     const tb = await api(tabMode === "all" ? "/api/table" : `/api/table/${tabMode}`), rows = tb.standings[0].rows, n = rows.length;
-    const zone = (r) => tabMode !== "all" ? "" : COMP === "CL" ? (r.position <= 8 ? "z1" : r.position <= 24 ? "z2" : "zr") : r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
+    const zone = (r) => tabMode !== "all" ? "" : COMP !== "PL1" ? (r.position <= 8 ? "z1" : r.position <= 24 ? "z2" : "zr") : r.position === 1 ? "z1" : r.position <= 3 ? "z2" : r.position <= 5 ? "z3" : r.position > n - 3 ? "zr" : "";
     app.innerHTML = pills() + note(tb) + `<div class="card" style="padding:6px 10px"><table>
       <tr><th></th><th class="t">Drużyna</th><th>M</th><th>Z</th><th>R</th><th>P</th><th>Bramki</th><th>Pkt</th></tr>
       ${rows.map((r) => `<tr class="${zone(r)} ${String(r.team.id).startsWith("tm-") ? "click" : ""}" data-tid="${r.team.id}"><td class="pos">${r.position}</td><td class="t"><div class="tn">${badge(r.team.name, 24)}${esc(r.team.name)}</div></td>
         <td>${r.matches}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td>${r.scoresFor}:${r.scoresAgainst}</td><td class="pts">${r.points}</td></tr>`).join("")}
-    </table></div><p class="mini">${tabMode === "all" ? (COMP === "CL" ? "Zielony – 1–8: awans do 1/8 finału · niebieski – 9–24: baraże · czerwony – 25–36: odpadają · " : "Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · ") : tabMode === "form" ? "Forma = tylko 5 ostatnich meczów każdej drużyny · " : tabMode === "home" ? "Tylko mecze u siebie · " : "Tylko mecze na wyjeździe · "}kliknij drużynę, by zobaczyć jej profil</p>`;
+    </table></div><p class="mini">${tabMode === "all" ? (COMP !== "PL1" ? "Zielony – 1–8: awans do 1/8 finału · niebieski – 9–24: baraże · czerwony – 25–36: odpadają · " : "Zielony – lider · niebieski – miejsca 2–3 · żółty – 4–5 · czerwony – strefa spadkowa · ") : tabMode === "form" ? "Forma = tylko 5 ostatnich meczów każdej drużyny · " : tabMode === "home" ? "Tylko mecze u siebie · " : "Tylko mecze na wyjeździe · "}kliknij drużynę, by zobaczyć jej profil</p>`;
     bindPills(); document.querySelectorAll("tr.click").forEach((tr) => tr.onclick = () => openTeam(tr.dataset.tid));
   } catch (e) { fail(e); }
 }

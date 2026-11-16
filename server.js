@@ -5,7 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const { AsyncLocalStorage } = require("async_hooks");
 // rozgrywki: kod Transfermarkt -> nazwy; bieżące rozgrywki trzymane w kontekście zapytania (?c=PL1|CL)
-const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", country: "Polska" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", country: "Europa" } };
+const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", country: "Polska" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", country: "Europa" },
+  EL: { name: "Liga Europy", gen: "Ligi Europy", country: "Europa" }, UCOL: { name: "Liga Konferencji", gen: "Ligi Konferencji", country: "Europa" } };
 const ALS = new AsyncLocalStorage();
 const comp = () => ALS.getStore() || "PL1";
 const isPL = () => comp() === "PL1";
@@ -372,7 +373,10 @@ function tmCall(p, ttl = 10 * 60000) {
   if (inflight.has(ck)) return inflight.get(ck);
   const job = (async () => {
     try {
-      const r = await fetch(TM_BASE + p, { headers: { Accept: "application/json", "User-Agent": "transfermarkt-api" }, signal: AbortSignal.timeout(15000) });
+      const get = () => fetch(TM_BASE + p, { headers: { Accept: "application/json", "User-Agent": "transfermarkt-api" }, signal: AbortSignal.timeout(15000) });
+      let r; // przy chwilowym błędzie serwera (5xx / zerwane połączenie) jedna ponowna próba po 1,5 s
+      try { r = await get(); } catch { r = null; }
+      if (!r || r.status >= 500) { await new Promise((ok) => setTimeout(ok, 1500)); r = await get(); }
       const text = await r.text();
       if (r.headers.get("x-amzn-waf-action") || (r.status === 202 && !text)) throw new HttpErr(503, "Transfermarkt zablokował zapytanie (WAF)");
       if (r.status === 403 || r.status === 429) throw new HttpErr(503, `Transfermarkt odmówił zapytania (${r.status})`);
@@ -424,7 +428,7 @@ async function tmSeason() {
     CS().tmMem = { tm: true, matches, stale: false, at: Date.now() };
     return CS().tmMem;
   } catch (e) {
-    CS().tmFailUntil = Date.now() + 10 * 60000;
+    CS().tmFailUntil = Date.now() + 2 * 60000;
     throw e;
   }
 }
@@ -926,7 +930,7 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
     const season = await tmSeason();
     info.notified = (await watchLive(season).catch(() => 0)) || 0;
     ensureGames(season); info.games = CS().GAMES.map.size;
-    await ALS.run("CL", async () => { const s2 = await tmSeason(); ensureGames(s2); info.gamesCL = CS().GAMES.map.size; }).catch(() => {});
+    for (const c of ["CL", "EL", "UCOL"]) await ALS.run(c, async () => { const s2 = await tmSeason(); await ensureGames(s2); info["games" + c] = CS().GAMES.map.size; }).catch(() => {});
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
   return info;
 }

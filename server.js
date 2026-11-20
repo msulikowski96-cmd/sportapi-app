@@ -992,8 +992,12 @@ function recapAiStart(r, facts) { // generuje tekst w tle (NVIDIA trwa do ~1,5 m
   analysisLog.push(Date.now());
   const entry = { status: "running", at: Date.now() }; st.RECAP.set(key, entry);
   const system = `Jesteś dziennikarzem i analitykiem taktycznym. Piszesz podsumowanie ${r}. kolejki rozgrywek: ${COMPS[comp()].name}. Skupiasz się na tym, JAK grały drużyny: kto zagrał inaczej niż zwykle, kto jest w formie, a kto w kryzysie. ` +
-    "Opierasz się WYŁĄCZNIE na dostarczonych danych, nie wymyślasz faktów (np. strzelców czy przebiegu meczów, których nie ma w danych). NIE podajesz prognoz, typów ani szans i nie wspominasz o zakładach. Piszesz po polsku, żywo, ale rzeczowo. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
-  const user = `Dane kolejki:\n${JSON.stringify(facts, null, 1)}\n\nZwróć JSON:\n{"tytul":"krótki tytuł podsumowania (do 8 słów)","wstep":"2-3 zdania o tym, czym zapamiętamy tę kolejkę",` +
+    "Opierasz się WYŁĄCZNIE na dostarczonych danych, nie wymyślasz faktów (np. strzelców czy przebiegu meczów, których nie ma w danych). " +
+    "Nie twórz superlatyw ani rekordów sezonu (np. 'najwięcej w sezonie', 'rekord'), jeśli nie wynikają wprost z danych; 'zwykle' oznacza średnią drużyny z pozostałych meczów sezonu. " +
+    "Nie używaj żargonu statystycznego (σ, odchylenie standardowe, z-score) – pisz językiem kibica, np. 'zwykle ma 54% posiadania, tym razem 74%'. " +
+    "NIE podajesz prognoz, typów ani szans i nie wspominasz o zakładach. Piszesz po polsku, żywo, ale rzeczowo. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
+  const forAi = { ...facts, deviations: facts.deviations.map(({ z, key, ...x }) => x) };
+  const user = `Dane kolejki:\n${JSON.stringify(forAi, null, 1)}\n\nZwróć JSON:\n{"tytul":"krótki tytuł podsumowania (do 8 słów)","wstep":"2-3 zdania o tym, czym zapamiętamy tę kolejkę",` +
     `"najwazniejsze":["3-5 krótkich punktów: najważniejsze wydarzenia i liczby kolejki"],"inaczej_niz_zwykle":["2-4 punkty: drużyny, które zagrały wyraźnie inaczej niż w sezonie i co to mówi o ich grze"],"forma":"1-2 zdania o drużynach w formie i w kryzysie"}`;
   nvidia([{ role: "system", content: system }, { role: "user", content: user }])
     .then((text) => { const ai = parseJson(text); Object.assign(entry, ai ? { status: "done", v: ai } : { status: "error", err: "Nie udało się odczytać odpowiedzi AI" }); })

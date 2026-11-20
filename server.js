@@ -409,7 +409,7 @@ function estMinute(ts) { // Transfermarkt nie podaje minuty – szacujemy z godz
   return m > 90 ? "~90+'" : `~${m}'`;
 }
 async function tmSeason() {
-  if (Date.now() < CS().tmFailUntil && CS().tmMem) return { ...tmMem, stale: true, why: "Transfermarkt chwilowo niedostępny" };
+  if (Date.now() < CS().tmFailUntil && CS().tmMem) return { ...CS().tmMem, stale: true, why: "Transfermarkt chwilowo niedostępny" };
   if (Date.now() < CS().tmFailUntil) throw new HttpErr(503, "Transfermarkt chwilowo niedostępny");
   try {
     const live = CS().tmMem?.matches.some((m) => inWindow(m));
@@ -517,11 +517,13 @@ const aiOf = (id) => { const r = fmv()?.p?.[String(id)]; return r ? { mv: r[0] *
 const fmvMeta = () => fmv() && { asOf: fmv().asOf, model: fmv().model };
 async function playerAi(id) {
   const r = fmv()?.p?.[String(id)];
-  if (!r) throw new HttpErr(404, "Brak wyceny AI dla tego zawodnika");
   const e = (await tmEntities("/players", [id]).catch(() => ({})))[String(id)] || {}, mvd = e.marketValueDetails?.current;
+  const ix = SIDX.data?.byPlayer.get(String(id)); // klub i rozgrywki z indeksu wyszukiwarki (jeśli gotowy)
+  const base = { id: String(id), name: e.name || ix?.name || String(id), age: e.lifeDates?.age ?? null, position: e.attributes?.position?.name || null,
+    tm: mvd?.value ?? mvd?.amount ?? null, contract: e.attributes?.contractUntil || null, club: ix ? { id: ix.clubId, name: ix.club, comps: ix.comps } : null, ...fmvMeta() };
+  if (!r) { if (!e.name) throw new HttpErr(404, "Nie znaleziono zawodnika"); return { ...base, mv: null }; }
   const K = (v) => (v == null ? null : v * 1e3);
-  return { id: String(id), name: e.name || String(id), age: e.lifeDates?.age ?? null, position: e.attributes?.position?.name || null,
-    tm: mvd?.value ?? mvd?.amount ?? null, contract: e.attributes?.contractUntil || null, ...fmvMeta(),
+  return { ...base,
     mv: K(r[0]), lo: K(r[1]), hi: K(r[2]), tv: K(r[3]), tvLo: K(r[4]), tvHi: K(r[5]), forecast: { 6: K(r[6]), 12: K(r[7]), 24: K(r[8]) },
     quality: r[9], uncertainty: r[10], summary: r[11], factors: r[12].map(([f, v]) => ({ factor: f, pct: v })), history: r[13].map(([y, v]) => ({ year: y, mv: K(v) })) };
 }
@@ -926,6 +928,147 @@ async function previewPage(matchId) {
   return { event: fsEv(m), home: side(hid, th), away: side(aid, ta), h2h, loading: !th || !ta, note: seasonNote(season) };
 }
 
+// ---------- podsumowanie kolejki (liczby + odstępstwa od normy + tekst AI, bez prognoz) ----------
+function standingsUpTo(season, r) {
+  const t = new Map();
+  for (const m of season.matches) {
+    const rn = roundNo(m.round);
+    if (!rn || rn > r || m.status !== "finished" || m.home == null) continue;
+    for (const [id, name, gf, ga] of [[m.home_team.team_id, m.home_team.name, m.home, m.away], [m.away_team.team_id, m.away_team.name, m.away, m.home]]) {
+      const e = t.get(id) || { id, name, p: 0, gd: 0, gf: 0 };
+      e.p += gf > ga ? 3 : gf === ga ? 1 : 0; e.gd += gf - ga; e.gf += gf; t.set(id, e);
+    }
+  }
+  return [...t.values()].sort((a, b) => b.p - a.p || b.gd - a.gd || b.gf - a.gf).map((e, i) => ({ ...e, pos: i + 1 }));
+}
+const roundDone = (season, r) => { const ms = season.matches.filter((m) => roundNo(m.round) === r);
+  return ms.length > 0 && ms.every((m) => m.status === "finished" || m.status === "postponed") && ms.some((m) => m.status === "finished"); };
+const DEV = [["poss", "posiadanie piłki", "%", 12], ["shots", "strzały", "", 6], ["shotsAg", "strzały rywali", "", 6], ["passAcc", "celność podań", "%", 7], ["gf", "bramki zdobyte", "", 2.5], ["ga", "bramki stracone", "", 2.5]];
+function recapFacts(season, r) {
+  const ms = season.matches.filter((m) => roundNo(m.round) === r && m.status === "finished" && m.home != null).sort((a, b) => a.timestamp - b.timestamp);
+  const P = leagueProfiles(season), byId = new Map(P.teams.map((t) => [t.id.replace("tm-", ""), t]));
+  const goals = ms.reduce((a, m) => a + m.home + m.away, 0);
+  const matches = ms.map((m) => { const g = CS().GAMES.map.get(String(m.match_id)), st = (s) => s?.st?.gameStatistics?.possessionPercentage ?? null, sh = (s) => s?.st?.goalStatistics?.totalShotAttempts ?? null;
+    return { id: "tm-" + m.match_id, home: m.home_team.name, away: m.away_team.name, hs: m.home, as: m.away, possH: st(g?.home), possA: st(g?.away), shotsH: sh(g?.home), shotsA: sh(g?.away) }; });
+  const big = [...matches].sort((a, b) => Math.abs(b.hs - b.as) - Math.abs(a.hs - a.as) || (b.hs + b.as) - (a.hs + a.as))[0];
+  const most = [...matches].sort((a, b) => (b.hs + b.as) - (a.hs + a.as))[0];
+  const shotTop = matches.flatMap((x) => [[x.home, x.shotsH, x.away], [x.away, x.shotsA, x.home]]).filter((x) => x[1] != null).sort((a, b) => b[1] - a[1])[0];
+  const numbers = { matches: ms.length, goals, perMatch: ms.length ? Math.round((goals / ms.length) * 100) / 100 : 0,
+    homeWins: ms.filter((m) => m.home > m.away).length, draws: ms.filter((m) => m.home === m.away).length, awayWins: ms.filter((m) => m.home < m.away).length,
+    biggestWin: big && big.hs !== big.as ? `${big.home} – ${big.away} ${big.hs}:${big.as}` : null, mostGoals: most ? `${most.home} – ${most.away} ${most.hs}:${most.as}` : null,
+    mostShots: shotTop ? `${shotTop[0]}: ${shotTop[1]} strzałów (z ${shotTop[2]})` : null };
+  // odstępstwa od normy: mecz z tej kolejki vs średnia z pozostałych meczów drużyny
+  const deviations = [];
+  for (const m of ms) for (const [id, opp] of [[m.home_team.team_id, m.away_team.name], [m.away_team.team_id, m.home_team.name]]) {
+    const t = byId.get(id); if (!t?.series) continue;
+    const cur = t.series.find((s) => s.round === r), rest = t.series.filter((s) => s.round !== r);
+    if (!cur || rest.length < 3) continue;
+    for (const [k, label, unit, thr] of DEV) {
+      const vals = rest.map((s) => s[k]).filter((x) => x != null); if (cur[k] == null || vals.length < 3) continue;
+      const mean = vals.reduce((a, b) => a + b, 0) / vals.length, sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length) || 1, diff = cur[k] - mean;
+      if (Math.abs(diff) >= thr && Math.abs(diff) / sd >= 1.4) deviations.push({ team: t.name, opp, key: k, label, unit, value: Math.round(cur[k] * 10) / 10, norm: Math.round(mean * 10) / 10, z: Math.round((diff / sd) * 10) / 10 });
+    }
+  }
+  deviations.sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
+  // forma: ostatnie 3 mecze (do tej kolejki włącznie) vs średnia sezonu
+  const form = P.teams.map((t) => { const s = (t.series || []).filter((x) => x.round != null && x.round <= r); if (s.length < 4) return null;
+    const last = s.slice(-3), pts = last.reduce((a, x) => a + x.pts, 0), ppg = s.reduce((a, x) => a + x.pts, 0) / s.length;
+    return { team: t.name, last3: pts, ppg: Math.round(ppg * 100) / 100, results: last.map((x) => `${x.home ? "d" : "w"} ${x.opp} ${x.gf}:${x.ga}`) }; }).filter(Boolean);
+  const hot = form.filter((f) => f.last3 >= 7 && f.last3 / 3 >= f.ppg + 0.3).sort((a, b) => b.last3 - a.last3 || (b.last3 / 3 - b.ppg) - (a.last3 / 3 - a.ppg)).slice(0, 3);
+  const cold = form.filter((f) => f.last3 <= 1 && f.ppg >= 1.2).sort((a, b) => a.last3 - b.last3 || b.ppg - a.ppg).slice(0, 3);
+  // ruchy w tabeli
+  const before = new Map(standingsUpTo(season, r - 1).map((e) => [e.id, e.pos])), after = standingsUpTo(season, r);
+  const moves = after.filter((e) => before.has(e.id)).map((e) => ({ team: e.name, from: before.get(e.id), to: e.pos, d: before.get(e.id) - e.pos })).filter((x) => x.d);
+  const up = [...moves].sort((a, b) => b.d - a.d).slice(0, 3), down = [...moves].sort((a, b) => a.d - b.d).slice(0, 3);
+  return { numbers, matches, deviations: deviations.slice(0, 8), hot, cold, moves: { up: up.filter((x) => x.d > 0), down: down.filter((x) => x.d < 0) }, leader: after[0] ? { team: after[0].name, points: after[0].p } : null };
+}
+function recapAiStart(r, facts) { // generuje tekst w tle (NVIDIA trwa do ~1,5 min); wynik w CS().RECAP
+  const st = CS(), key = `${r}:${facts.matches.length}`;
+  st.RECAP ||= new Map();
+  const cur = st.RECAP.get(key);
+  if (cur && (cur.status === "running" || cur.status === "done" || Date.now() - cur.at < 10 * 60000)) return cur;
+  analysisLog = analysisLog.filter((x) => Date.now() - x < HOUR);
+  if (analysisLog.length >= 20) return { status: "limit" };
+  analysisLog.push(Date.now());
+  const entry = { status: "running", at: Date.now() }; st.RECAP.set(key, entry);
+  const system = `Jesteś dziennikarzem i analitykiem taktycznym. Piszesz podsumowanie ${r}. kolejki rozgrywek: ${COMPS[comp()].name}. Skupiasz się na tym, JAK grały drużyny: kto zagrał inaczej niż zwykle, kto jest w formie, a kto w kryzysie. ` +
+    "Opierasz się WYŁĄCZNIE na dostarczonych danych, nie wymyślasz faktów (np. strzelców czy przebiegu meczów, których nie ma w danych). NIE podajesz prognoz, typów ani szans i nie wspominasz o zakładach. Piszesz po polsku, żywo, ale rzeczowo. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
+  const user = `Dane kolejki:\n${JSON.stringify(facts, null, 1)}\n\nZwróć JSON:\n{"tytul":"krótki tytuł podsumowania (do 8 słów)","wstep":"2-3 zdania o tym, czym zapamiętamy tę kolejkę",` +
+    `"najwazniejsze":["3-5 krótkich punktów: najważniejsze wydarzenia i liczby kolejki"],"inaczej_niz_zwykle":["2-4 punkty: drużyny, które zagrały wyraźnie inaczej niż w sezonie i co to mówi o ich grze"],"forma":"1-2 zdania o drużynach w formie i w kryzysie"}`;
+  nvidia([{ role: "system", content: system }, { role: "user", content: user }])
+    .then((text) => { const ai = parseJson(text); Object.assign(entry, ai ? { status: "done", v: ai } : { status: "error", err: "Nie udało się odczytać odpowiedzi AI" }); })
+    .catch((e) => Object.assign(entry, { status: "error", err: String(e.message || e) }))
+    .finally(() => { entry.at = Date.now(); });
+  return entry;
+}
+async function recapRoute(rArg) {
+  const season = await tmSeason();
+  const rounds = [...new Set(season.matches.map((m) => roundNo(m.round)).filter(Boolean))].sort((a, b) => a - b), done = rounds.filter((r) => roundDone(season, r));
+  if (!done.length) throw new HttpErr(404, "Żadna kolejka nie jest jeszcze zakończona");
+  const r = rArg ?? done[done.length - 1];
+  const nav = { prev: [...done].reverse().find((x) => x < r) ?? null, next: done.find((x) => x > r) ?? null, latest: done[done.length - 1] };
+  if (!roundDone(season, r)) return { round: r, complete: false, ...nav };
+  const need = season.matches.filter((m) => roundNo(m.round) === r && m.status === "finished" && !CS().GAMES.map.has(String(m.match_id)));
+  const job = ensureGames(season);
+  if (need.length && job) return { round: r, complete: true, loading: true, progress: { done: CS().GAMES.done, total: CS().GAMES.total }, ...nav };
+  const facts = recapFacts(season, r);
+  const ai = NV_KEY ? recapAiStart(r, facts) : { status: "off" };
+  return { round: r, complete: true, comp: COMPS[comp()].name, ...nav, facts, ai: { status: ai.status, v: ai.v || null, err: ai.err || null } };
+}
+
+// ---------- wyszukiwarka klubów i zawodników (wszystkie rozgrywki) ----------
+const norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ł/g, "l").replace(/Ł/g, "L").replace(/ø/g, "o").replace(/ß/g, "ss").toLowerCase();
+const SIDX = { at: 0, data: null, running: null, done: 0, total: 0 };
+function searchIndex() {
+  if (SIDX.data && Date.now() - SIDX.at < 12 * HOUR) return SIDX.data;
+  if (SIDX.running) return null;
+  SIDX.running = (async () => {
+    const clubs = new Map();
+    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => {
+      const season = await tmSeason();
+      for (const m of season.matches) for (const t of [m.home_team, m.away_team]) {
+        const e = clubs.get(t.team_id) || { id: t.team_id, name: t.name, crest: t.crest, comps: [] };
+        if (!e.comps.includes(c)) e.comps.push(c);
+        clubs.set(t.team_id, e);
+      }
+    }).catch(() => {});
+    const list = [...clubs.values()]; SIDX.total = list.length; SIDX.done = 0;
+    const squads = await pool(list, 6, async (c) => { const s = await tmCall(`/club/${c.id}/squad`, 12 * HOUR).catch(() => null); SIDX.done++; return s; });
+    const members = list.flatMap((c, i) => (squads[i]?.squad || []).filter((m) => m.type === "current" || !m.type).map((m) => ({ pid: String(m.playerId), club: c })));
+    const ents = await tmEntities("/players", members.map((m) => m.pid));
+    const seen = new Set(), players = [];
+    for (const { pid, club } of members) {
+      if (seen.has(pid)) continue; seen.add(pid);
+      const e = ents[pid] || {}, mvd = e.marketValueDetails?.current;
+      if (!e.name) continue;
+      players.push({ id: pid, name: e.name, n: norm(e.name), clubId: club.id, club: club.name, comps: club.comps, pos: POS_PL[e.attributes?.positionGroup] || "Inni",
+        age: e.lifeDates?.age ?? null, tm: mvd?.value ?? mvd?.amount ?? null, ai: !!fmv()?.p?.[pid] });
+    }
+    SIDX.data = { clubs: list.map((c) => ({ ...c, n: norm(c.name) })), players, byPlayer: new Map(players.map((p) => [p.id, p])) };
+    SIDX.at = Date.now();
+    return SIDX.data;
+  })().catch(() => null).finally(() => { SIDX.running = null; });
+  return SIDX.data; // stare dane (jeśli są) podczas odświeżania
+}
+function matchScore(n, q) { // 3: początek nazwy, 2: początek słowa, 1: gdziekolwiek
+  if (n.startsWith(q)) return 3;
+  if (n.split(/[\s\-'.]+/).some((w) => w.startsWith(q))) return 2;
+  return n.includes(q) ? 1 : 0;
+}
+function searchRoute(q) {
+  const idx = searchIndex();
+  if (!idx) return { ready: false, progress: { done: SIDX.done, total: SIDX.total } };
+  const nq = norm(q).trim();
+  if (nq.length < 2) return { ready: true, clubs: [], players: [] };
+  const terms = nq.split(/\s+/);
+  const score = (n) => { let s = 0; for (const t of terms) { const x = matchScore(n, t); if (!x) return 0; s += x; } return s; };
+  const clubs = idx.clubs.map((c) => [score(c.n), c]).filter(([s]) => s).sort((a, b) => b[0] - a[0] || a[1].name.localeCompare(b[1].name)).slice(0, 8)
+    .map(([, c]) => ({ id: c.id, name: c.name, crest: c.crest, comps: c.comps }));
+  const players = idx.players.map((p) => [score(p.n), p]).filter(([s]) => s).sort((a, b) => b[0] - a[0] || (b[1].tm || 0) - (a[1].tm || 0)).slice(0, 25)
+    .map(([, p]) => ({ id: p.id, name: p.name, clubId: p.clubId, club: p.club, comps: p.comps, pos: p.pos, age: p.age, tm: p.tm, ai: p.ai }));
+  return { ready: true, clubs, players };
+}
+
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN, TG_CHAT = process.env.TELEGRAM_CHAT_ID;
 async function tgSend(text) {
   if (!TG_TOKEN || !TG_CHAT) throw new HttpErr(503, "Brak TELEGRAM_BOT_TOKEN lub TELEGRAM_CHAT_ID");
@@ -973,6 +1116,9 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
     info.notified = (await watchLive(season).catch(() => 0)) || 0;
     ensureGames(season); info.games = CS().GAMES.map.size;
     for (const c of ["CL", "EL", "UCOL"]) await ALS.run(c, async () => { const s2 = await tmSeason(); await ensureGames(s2); info["games" + c] = CS().GAMES.map.size; }).catch(() => {});
+    await ensureGames(season);
+    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { if (analysisLog.filter((t) => Date.now() - t < HOUR).length < 14) await recapRoute(); }).catch(() => {});
+    searchIndex();
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
   return info;
 }
@@ -993,7 +1139,7 @@ function send(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-async function route(p) {
+async function route(p, qs = new URLSearchParams()) {
   let m;
   if (p === "/api/status") {
     return { status: 200, data: { transfermarkt: { ok: Date.now() >= CS().tmFailUntil }, flashscore: { remaining: fsLeft, resetAt: fsLeft === null ? null : new Date(fsResetAt).toISOString(), limit: 30 }, seed: SEED?.savedAt || null, telegram: !!(TG_TOKEN && TG_CHAT), aiLastHour: analysisLog.filter((t) => Date.now() - t < HOUR).length, lastTick: lastTickInfo } };
@@ -1068,6 +1214,8 @@ async function route(p) {
     return { status: 200, data: out };
   }
   if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
+  if ((m = p.match(/^\/api\/recap(?:\/(\d+))?$/))) return { status: 200, data: await recapRoute(m[1] ? +m[1] : undefined) };
+  if (p === "/api/search") return { status: 200, data: searchRoute(qs.get("q") || "") };
   if (p === "/api/values") return { status: 200, data: await valuesRoute() };
   if ((m = p.match(/^\/api\/player-ai\/(\d+)$/))) return { status: 200, data: await playerAi(m[1]) };
   return { status: 404, data: { error: "Nieznany endpoint" } };
@@ -1088,7 +1236,7 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith("/api/")) {
     if (!KEY) return send(res, 500, { error: "Brak zmiennej środowiskowej RAPIDAPI_KEY" });
     try {
-      const r = await ALS.run(c, () => route(p));
+      const r = await ALS.run(c, () => route(p, u.searchParams));
       return send(res, r.status, r.data);
     } catch (e) {
       return send(res, e.status || 502, { error: String(e.message || e) });

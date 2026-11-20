@@ -127,10 +127,21 @@
   .rng .mk.b span { top:24px; }
   .fc { display:grid; grid-template-columns:1fr 80px 52px; gap:8px; align-items:center; font-size:13px; padding:4px 0; } .fc .bar { height:7px; border-radius:99px; background:var(--s2); position:relative; overflow:hidden; } .fc .bar i { position:absolute; top:0; bottom:0; }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
+  .sbtn { position:absolute; right:18px; top:18px; z-index:2; width:44px; height:44px; border-radius:50%; background:var(--bg2); border:2px solid rgba(238,243,234,.24); color:var(--txt); display:grid; place-items:center; cursor:pointer; transition:background-color .4s; }
+  .sbtn:hover { border-color:var(--acc); } .sbtn svg, .sin svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
+  header .ttl { padding-right:56px; }
+  .srch { position:fixed; inset:0; z-index:60; background:var(--bg2); overflow:auto; animation:fade .15s ease-out; }
+  .sin { position:sticky; top:0; display:flex; align-items:center; gap:10px; padding:14px 16px; background:var(--bg2); border-bottom:2px solid var(--chalk); max-width:720px; margin:0 auto; }
+  .sin svg { flex:none; color:var(--mut); } .sin input { flex:1; min-width:0; background:none; border:0; color:var(--txt); font:600 18px var(--f); outline:none; padding:8px 0; }
+  .sin input::-webkit-search-cancel-button { display:none; } .sin input::placeholder { color:var(--mut); font-weight:500; } .sin .x { background:transparent; border:1.5px solid var(--line); color:var(--txt); border-radius:50%; width:36px; height:36px; flex:none; cursor:pointer; }
+  .sres { max-width:720px; margin:0 auto; padding:4px 16px 40px; } .sres .sim { cursor:pointer; } .sres .sim:hover .sn { color:var(--acc); }
+  .sheet { z-index:70; }
+  .rcp { display:flex; flex-direction:column; gap:3px; width:100%; text-align:left; background:transparent; color:var(--txt); border:1.5px dashed rgba(255,216,74,.5); border-radius:6px; padding:12px 14px; margin:0 0 14px; font:500 13px var(--f); cursor:pointer; }
+  .rcp b { font-size:16px; font-weight:800; font-stretch:112%; color:var(--acc); } .rcp span { color:var(--mut); } .rcp:hover { border-style:solid; }
 </style>
 </head>
 <body>
-<header><div class="ttl"><h1 id="cname">Ekstraklasa</h1><p>Jak grają drużyny: styl, mocne i słabe strony</p></div><div class="cs" id="cs"><button data-c="PL1">Ekstraklasa</button><button data-c="CL"><span class="f">Liga Mistrzów</span><span class="s">LM</span></button><button data-c="EL"><span class="f">Liga Europy</span><span class="s">LE</span></button><button data-c="UCOL"><span class="f">Liga Konferencji</span><span class="s">LKE</span></button></div></header>
+<header><button class="sbtn" id="sbtn" aria-label="Szukaj klubu lub zawodnika"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button><div class="ttl"><h1 id="cname">Ekstraklasa</h1><p>Jak grają drużyny: styl, mocne i słabe strony</p></div><div class="cs" id="cs"><button data-c="PL1">Ekstraklasa</button><button data-c="CL"><span class="f">Liga Mistrzów</span><span class="s">LM</span></button><button data-c="EL"><span class="f">Liga Europy</span><span class="s">LE</span></button><button data-c="UCOL"><span class="f">Liga Konferencji</span><span class="s">LKE</span></button></div></header>
 <nav id="nav">
   <button data-v="live" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4"/></svg>Na żywo</button>
   <button data-v="round"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>Mecze</button>
@@ -212,7 +223,7 @@ async function showLive(silent) {
     let html = note(lv);
     if (ev.length) html += `<div class="day">Trwające mecze</div>` + ev.map(matchRow).join("");
     else {
-      html += `<p class="hello">Teraz nie trwa żaden mecz. Najbliższa kolejka:</p>`;
+      html += `<button class="rcp" data-recap=""><b>Podsumowanie ostatniej kolejki</b><span>Kto zagrał inaczej niż zwykle, forma, ruchy w tabeli i liczby</span></button><p class="hello">Teraz nie trwa żaden mecz. Najbliższa kolejka:</p>`;
       try {
         const rs = await api("/api/rounds"); curRound = rs.currentRound?.round || 1; maxRound = rs.rounds?.length || 34;
         if (round === null) round = curRound;
@@ -231,7 +242,10 @@ async function showRound() {
   try {
     if (round === null) { const r = await api("/api/rounds"); curRound = r.currentRound?.round || 1; maxRound = r.rounds?.length || 34; round = curRound; }
     const rd = await api(`/api/round/${round}`), ev = rd.events || [];
-    app.innerHTML = note(rd) + `<div class="bar"><button id="pr" ${round <= 1 ? "disabled" : ""}>‹</button><b>Kolejka ${round}</b><button id="nx" ${round >= maxRound ? "disabled" : ""}>›</button></div>` + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów.</p>`);
+    const ended = ev.length && ev.every((e) => ["finished", "postponed", "canceled"].includes(e.status?.type)) && ev.some((e) => e.status?.type === "finished");
+    app.innerHTML = note(rd) + `<div class="bar"><button id="pr" ${round <= 1 ? "disabled" : ""}>‹</button><b>Kolejka ${round}</b><button id="nx" ${round >= maxRound ? "disabled" : ""}>›</button></div>`
+      + (ended ? `<button class="rcp" data-recap="${round}"><b>Podsumowanie kolejki</b><span>Kto zagrał inaczej niż zwykle, forma, ruchy w tabeli i liczby kolejki</span></button>` : "")
+      + (ev.length ? listByDay(ev) : `<p class="mut">Brak meczów.</p>`);
     $("#pr").onclick = () => { if (round > 1) { round--; showRound(); } };
     $("#nx").onclick = () => { if (round < maxRound) { round++; showRound(); } };
     bindRows();
@@ -312,17 +326,23 @@ async function openPlayerAi(id) {
   sh.innerHTML = `<div class="sb2"><button class="x" aria-label="Zamknij">✕</button><p class="mut">Wczytuję wycenę…</p></div>`;
   const close = () => { sh.remove(); document.body.style.overflow = ""; document.removeEventListener("keydown", esc_); };
   const esc_ = (e) => { if (e.key === "Escape") close(); };
-  sh.onclick = (e) => { if (e.target === sh || e.target.closest(".x")) close(); };
+  sh.onclick = (e) => { const g = e.target.closest("[data-goteam]"); if (g) return goTeam(g.dataset.goteam, g.dataset.comps.split(",")); if (e.target === sh || e.target.closest(".x")) close(); };
   document.addEventListener("keydown", esc_); document.body.style.overflow = "hidden"; document.body.appendChild(sh);
   try {
     const d = await api(`/api/player-ai/${id}`);
+    const teamBtn = d.club ? `<button class="btn" style="margin-top:16px" data-goteam="${d.club.id}" data-comps="${d.club.comps.join(",")}">Strona drużyny: ${tn(d.club.name, 18)}</button>` : "";
+    const head = `<button class="x" aria-label="Zamknij">✕</button><h2 style="margin:0">${esc(d.name)}</h2><div class="mini">${[POS_N[d.position] || d.position, d.age && d.age + " l.", d.contract && "kontrakt do " + fmtDate(d.contract)].filter(Boolean).map(esc).join(" · ")}</div>`;
+    if (d.mv == null) {
+      sh.querySelector(".sb2").innerHTML = head + `<div class="kpis k3" style="margin-top:14px"><div class="kpi"><b>${mlnE(d.tm)}</b><span>Transfermarkt</span></div><div class="kpi"><b>${d.age ?? "–"}</b><span>wiek</span></div><div class="kpi"><b>${d.contract ? String(d.contract).slice(0, 4) : "–"}</b><span>kontrakt do</span></div></div>
+        <p class="mini" style="margin-top:14px">Ten zawodnik nie ma wyceny AI. Model wycenia graczy 8 lig (Anglia, Hiszpania, Niemcy, Włochy, Francja, Portugalia, Holandia, Polska) i potrzebuje ich statystyk z poprzedniego sezonu.</p>${teamBtn}`;
+      return;
+    }
     const lo = Math.min(d.lo, d.tm || d.lo), hi = Math.max(d.hi, d.tm || d.hi), X = (v) => Math.max(0, Math.min(100, (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo) || 1) * 100));
     const lab = (v) => X(v) < 15 ? "left:0;transform:none" : X(v) > 85 ? "left:auto;right:0;transform:none" : "";
     const unc = { low: "niska", medium: "średnia", high: "wysoka" }[d.uncertainty] || d.uncertainty;
     const fmax = Math.max(1, ...d.factors.map((f) => Math.abs(f.pct)));
     const hist = [...d.history, { year: +d.asOf.slice(0, 4), mv: d.mv, now: 1 }], hmax = Math.max(...hist.map((x) => x.mv));
-    sh.querySelector(".sb2").innerHTML = `<button class="x" aria-label="Zamknij">✕</button>
-      <h2 style="margin:0">${esc(d.name)}</h2><div class="mini">${[POS_N[d.position] || d.position, d.age && d.age + " l.", d.contract && "kontrakt do " + fmtDate(d.contract)].filter(Boolean).map(esc).join(" · ")}</div>
+    sh.querySelector(".sb2").innerHTML = head + `
       <div class="kpis" style="margin-top:14px"><div class="kpi"><b>${mlnE(d.mv)}</b><span>wycena AI</span></div><div class="kpi"><b>${mlnE(d.tm)}</b><span>Transfermarkt</span></div><div class="kpi"><b>${mlnE(d.tv)}</b><span>kwota transferu</span></div><div class="kpi"><b>${d.quality}%</b><span>jakość danych</span></div></div>
       <h3>Przedział 80% wyceny AI</h3>
       <div class="rng"><div class="mk" style="left:${X(d.mv)}%;background:var(--acc)"><span style="color:var(--acc);${lab(d.mv)}">AI ${mlnE(d.mv)}</span></div>${d.tm ? `<div class="mk b" style="left:${X(d.tm)}%;background:#8cb8ff"><span style="color:#8cb8ff;${lab(d.tm)}">TM ${mlnE(d.tm)}</span></div>` : ""}</div>
@@ -331,10 +351,99 @@ async function openPlayerAi(id) {
       ${d.history.length ? `<h3>Wycena AI w kolejnych latach</h3><div style="display:flex;gap:8px;align-items:flex-end;height:110px">${hist.map((x) => `<div style="flex:1;text-align:center"><div class="mini" style="font-size:10.5px">${(x.mv / 1e6).toFixed(x.mv < 1e7 ? 1 : 0).replace(".", ",")}</div><div style="height:${Math.max(4, (x.mv / hmax) * 70)}px;border-radius:6px 6px 0 0;background:${x.now ? "var(--acc)" : "rgba(255,216,74,.35)"}"></div><div class="mini">${x.year}</div></div>`).join("")}</div><p class="mini" style="margin:4px 0 0">w mln € · stan na połowę czerwca</p>` : ""}
       <h3>Co podnosi i obniża wycenę</h3>${d.factors.map((f) => `<div class="fc"><span>${esc(f.factor)}</span><div class="bar"><i style="${f.pct >= 0 ? "left:0" : "right:0"};width:${(Math.abs(f.pct) / fmax) * 100}%;background:${f.pct >= 0 ? "var(--acc)" : "var(--red)"}"></i></div><b style="text-align:right;color:${f.pct >= 0 ? "var(--acc)" : "var(--red)"}">${f.pct > 0 ? "+" : ""}${f.pct}%</b></div>`).join("")}
       <p style="font-size:13.5px;line-height:1.5;margin-top:14px">${esc(d.summary)}</p>
-      <p class="mini">Wycena modelu AI (projekt Football Market Value), dane do ${fmtDate(d.asOf)}. Model uczył się na prawdziwych kwotach transferów. Na ${d.model.n_test} transferach testowych mediana błędu wynosi ${Math.round(d.model.mv_median_ape * 100)}% (kwota transferu: ${Math.round((d.model.tv_median_ape || 0) * 100)}%), więc to ciekawostka, a nie pewna cena.</p>`;
+      <p class="mini">Wycena modelu AI (projekt Football Market Value), dane do ${fmtDate(d.asOf)}. Model uczył się na prawdziwych kwotach transferów. Na ${d.model.n_test} transferach testowych mediana błędu wynosi ${Math.round(d.model.mv_median_ape * 100)}% (kwota transferu: ${Math.round((d.model.tv_median_ape || 0) * 100)}%), więc to ciekawostka, a nie pewna cena.</p>${teamBtn}`;
   } catch (e) { sh.querySelector(".sb2").innerHTML = `<button class="x" aria-label="Zamknij">✕</button><p class="err">${esc(e.message)}</p>`; }
 }
 document.addEventListener("click", (e) => { const el = e.target.closest("[data-pl]"); if (el) openPlayerAi(el.dataset.pl); });
+
+// ---------- podsumowanie kolejki ----------
+let recapTok = 0;
+async function showRecap(r) {
+  view = "round"; clearInterval(timer); clearTimeout(timer); timer = null;
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.v === "round"));
+  const tok = ++recapTok; loading("Przygotowuję podsumowanie kolejki…"); window.scrollTo({ top: 0 });
+  const load = async () => {
+    if (tok !== recapTok || view !== "round") return;
+    try {
+      const d = await api(`/api/recap${r ? "/" + r : ""}`);
+      if (tok !== recapTok || view !== "round") return;
+      if (d.loading) {
+        app.innerHTML = `<div class="card"><b>Zbieram statystyki meczów…</b><div class="prog"><i style="width:${d.progress.total ? Math.round((d.progress.done / d.progress.total) * 100) : 5}%"></i></div><p class="mini" style="margin:0">Po restarcie serwera trwa to do minuty.</p></div>`;
+        timer = setTimeout(load, 3000); return;
+      }
+      if (!d.complete) { app.innerHTML = `<button class="btn back" id="rb">‹ Kolejka ${d.round}</button><p class="mut">Kolejka ${d.round} jeszcze się nie zakończyła. Podsumowanie pojawi się po ostatnim meczu.</p>`; $("#rb").onclick = () => { round = d.round; showRound(); }; return; }
+      renderRecap(d);
+      if (d.ai.status === "running") timer = setTimeout(load, 6000);
+    } catch (e) { if (tok === recapTok) fail(e); }
+  };
+  load();
+}
+function renderRecap(d) {
+  const f = d.facts, n = f.numbers, a = d.ai.v;
+  const GOOD = { gf: 1, shots: 1, passAcc: 1, ga: -1, shotsAg: -1, poss: 0 }, pl = (v) => String(v).replace(".", ",");
+  const dev = (x) => { const up = x.value > x.norm, g = GOOD[x.key] * (up ? 1 : -1), col = g > 0 ? "var(--acc)" : g < 0 ? "var(--red)" : "var(--txt)";
+    return `<div class="sim" style="cursor:default">${badge(x.team, 26)}<div class="sn">${esc(x.team)}<div class="mini">${esc(x.label)}: <b style="color:${col}">${pl(x.value)}${x.unit}</b> (zwykle ${pl(x.norm)}${x.unit}) · z ${esc(x.opp)}</div></div><b style="color:${col}">${up ? "▲" : "▼"}</b></div>`; };
+  const frm = (x) => `<div class="sim" style="cursor:default">${badge(x.team, 24)}<div class="sn">${esc(x.team)}<div class="mini">${x.last3} pkt w 3 meczach (średnio ${String(x.ppg).replace(".", ",")} pkt/mecz) · ${x.results.map(esc).join(", ")}</div></div></div>`;
+  const mv = (x, up) => `<div class="sim" style="cursor:default">${badge(x.team, 24)}<div class="sn">${esc(x.team)}</div><span class="mini">${x.from}. → ${x.to}.</span><b style="color:${up ? "var(--acc)" : "var(--red)"}">${up ? "▲" : "▼"} ${Math.abs(x.d)}</b></div>`;
+  let aiHtml;
+  if (a) aiHtml = `<h2 style="margin:4px 0 8px">${esc(a.tytul || `Podsumowanie ${d.round}. kolejki`)}</h2><p style="margin:0;font-size:15.5px;line-height:1.55">${esc(a.wstep || "")}</p>
+    ${a.najwazniejsze?.length ? `<h3>Najważniejsze</h3><ul class="sw g">${a.najwazniejsze.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${a.inaczej_niz_zwykle?.length ? `<h3>Inaczej niż zwykle</h3><ul class="sw">${a.inaczej_niz_zwykle.map((x) => `<li style="padding-left:0">${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${a.forma ? `<h3>Forma</h3><p style="margin:0;font-size:14.5px">${esc(a.forma)}</p>` : ""}<p class="mini" style="margin:12px 0 0">Tekst napisał model AI na podstawie liczb z tej kolejki.</p>`;
+  else if (d.ai.status === "running") aiHtml = `<h2 style="margin:4px 0 8px">Podsumowanie ${d.round}. kolejki</h2><p class="mut" style="margin:0">AI pisze podsumowanie. Zwykle trwa to około minuty, strona odświeży się sama.</p><div class="prog"><i style="width:35%;animation:pulse 1.4s infinite"></i></div>`;
+  else aiHtml = `<h2 style="margin:4px 0 8px">Podsumowanie ${d.round}. kolejki</h2><p class="mini" style="margin:0">${d.ai.status === "limit" ? "Opis AI będzie dostępny za jakiś czas (limit opisów na godzinę)." : "Opis AI jest chwilowo niedostępny."} Poniżej liczby z tej kolejki.</p>`;
+  app.innerHTML = `<button class="btn back" id="rb">‹ Kolejka ${d.round}</button>
+    <div class="bar"><button id="rp" ${d.prev ? "" : "disabled"} aria-label="Poprzednia kolejka">‹</button><b>${d.round}. kolejka</b><button id="rn" ${d.next ? "" : "disabled"} aria-label="Następna kolejka">›</button></div>
+    <div class="card ai">${aiHtml}</div>
+    <div class="card"><h3 style="margin-top:0">Liczby kolejki</h3>
+      <div class="kpis" style="margin-top:4px"><div class="kpi"><b>${n.goals}</b><span>goli (${String(n.perMatch).replace(".", ",")} na mecz)</span></div><div class="kpi"><b>${n.homeWins}</b><span>wygrane gospodarzy</span></div><div class="kpi"><b>${n.draws}</b><span>remisy</span></div><div class="kpi"><b>${n.awayWins}</b><span>wygrane gości</span></div></div>
+      <div class="mini" style="margin-top:12px;line-height:1.7">${[n.biggestWin && `Najwyższe zwycięstwo: <b style="color:var(--txt)">${esc(n.biggestWin)}</b>`, n.mostGoals && `Najwięcej goli: <b style="color:var(--txt)">${esc(n.mostGoals)}</b>`, n.mostShots && `Najwięcej strzałów: <b style="color:var(--txt)">${esc(n.mostShots)}</b>`, f.leader && `Lider po kolejce: <b style="color:var(--txt)">${esc(f.leader.team)}</b> (${f.leader.points} pkt)`].filter(Boolean).join("<br>")}</div></div>
+    ${f.deviations.length ? `<div class="card"><h3 style="margin-top:0">Zagrali inaczej niż zwykle</h3><p class="mini" style="margin:-4px 0 4px">Mecz z tej kolejki w porównaniu ze średnią drużyny z pozostałych spotkań.</p>${f.deviations.map(dev).join("")}</div>` : ""}
+    ${f.hot.length || f.cold.length ? `<div class="grid2 stack">${f.hot.length ? `<div class="card"><h3 style="margin-top:0">W formie</h3>${f.hot.map(frm).join("")}</div>` : ""}${f.cold.length ? `<div class="card"><h3 style="margin-top:0">W kryzysie</h3>${f.cold.map(frm).join("")}</div>` : ""}</div>` : ""}
+    ${f.moves.up.length || f.moves.down.length ? `<div class="card"><h3 style="margin-top:0">Ruchy w tabeli</h3>${f.moves.up.map((x) => mv(x, true)).join("")}${f.moves.down.map((x) => mv(x, false)).join("")}</div>` : ""}
+    <div class="card"><h3 style="margin-top:0">Wyniki kolejki</h3>${f.matches.map((x) => `<div class="vs" data-mid="${x.id}" style="cursor:pointer"><span style="text-align:right">${esc(x.home)} ${badge(x.home, 18)}</span><span class="mid">${x.hs}:${x.as}</span><span>${badge(x.away, 18)} ${esc(x.away)}</span></div>`).join("")}</div>`;
+  $("#rb").onclick = () => { round = d.round; showRound(); };
+  $("#rp").onclick = () => d.prev && showRecap(d.prev); $("#rn").onclick = () => d.next && showRecap(d.next);
+  document.querySelectorAll("[data-mid]").forEach((el) => el.onclick = () => openMatch(el.dataset.mid));
+}
+document.addEventListener("click", (e) => { const el = e.target.closest("[data-recap]"); if (el) showRecap(el.dataset.recap ? +el.dataset.recap : undefined); });
+
+// ---------- wyszukiwarka ----------
+function goTeam(clubId, comps) {
+  const c = comps.includes(COMP) ? COMP : comps[0];
+  if (c && c !== COMP) { setComp(c, false); round = null; curRound = null; maxRound = COMPS[c].rounds; cmpA = cmpB = null; crestsFor(c); }
+  document.querySelector(".srch")?.remove(); document.querySelectorAll(".sheet").forEach((x) => x.remove()); document.body.style.overflow = "";
+  openTeam("tm-" + clubId);
+}
+function openSearch() {
+  if (document.querySelector(".srch")) return;
+  const ov = document.createElement("div"); ov.className = "srch"; ov.setAttribute("role", "dialog"); ov.setAttribute("aria-label", "Szukaj klubu lub zawodnika");
+  ov.innerHTML = `<div class="sin"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="sq" type="search" placeholder="Klub lub zawodnik, np. Lech albo Haaland" autocomplete="off" enterkeyhint="search"><button class="x" aria-label="Zamknij wyszukiwanie">✕</button></div><div class="sres" id="sres"><p class="mini">Szukam we wszystkich rozgrywkach: Ekstraklasie, Lidze Mistrzów, Lidze Europy i Lidze Konferencji.</p></div>`;
+  document.body.appendChild(ov); document.body.style.overflow = "hidden";
+  const inp = ov.querySelector("#sq"), res = ov.querySelector("#sres"); let tq = 0, deb;
+  const close = () => { ov.remove(); if (!document.querySelector(".sheet")) document.body.style.overflow = ""; document.removeEventListener("keydown", kd); };
+  const kd = (e) => { if (e.key === "Escape" && !document.querySelector(".sheet")) close(); };
+  document.addEventListener("keydown", kd);
+  ov.querySelector(".x").onclick = close;
+  const compNames = (cs) => cs.map((c) => COMPS[c]?.name).filter(Boolean).join(", ");
+  const run = async () => {
+    const q = inp.value.trim(), my = ++tq;
+    if (q.length < 2) { res.innerHTML = `<p class="mini">Wpisz co najmniej 2 litery.</p>`; return; }
+    try {
+      const d = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (my !== tq) return;
+      if (!d.ready) { res.innerHTML = `<p class="mut">Przygotowuję wyszukiwarkę: zbieram kadry ${d.progress.total ? `(${d.progress.done} z ${d.progress.total} klubów)` : "wszystkich klubów"}. Pierwsze uruchomienie trwa do minuty.</p>`; deb = setTimeout(run, 3000); return; }
+      for (const c of d.clubs) if (c.crest && !CREST[c.name]) CREST[c.name] = c.crest;
+      if (!d.clubs.length && !d.players.length) { res.innerHTML = `<p class="mut">Nic nie znaleziono dla „${esc(q)}”. Spróbuj samego nazwiska albo części nazwy klubu.</p>`; return; }
+      res.innerHTML = (d.clubs.length ? `<h3>Kluby</h3>` + d.clubs.map((c) => `<div class="sim" data-club="${c.id}" data-comps="${c.comps.join(",")}">${badge(c.name, 30)}<div class="sn">${esc(c.name)}<div class="mini">${esc(compNames(c.comps))}</div></div></div>`).join("") : "")
+        + (d.players.length ? `<h3>Zawodnicy</h3>` + d.players.map((p) => `<div class="sim" data-pl="${p.id}">${badge(p.club, 28)}<div class="sn">${esc(p.name)}<div class="mini">${esc(p.club)} · ${esc(p.pos)}${p.age ? " · " + p.age + " l." : ""}</div></div><div style="text-align:right"><b style="font-size:17px">${mlnE(p.tm)}</b>${p.ai ? `<div class="aiv up">wycena AI</div>` : ""}</div></div>`).join("") : "");
+      res.querySelectorAll("[data-club]").forEach((el) => el.onclick = () => goTeam(el.dataset.club, el.dataset.comps.split(",")));
+    } catch (e) { if (my === tq) res.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  };
+  inp.oninput = () => { clearTimeout(deb); deb = setTimeout(run, 220); };
+  setTimeout(() => inp.focus(), 30);
+}
+document.addEventListener("keydown", (e) => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "")) { e.preventDefault(); openSearch(); } });
 
 function incLine(i) {
   const home = i.isHome === true; let txt = null;
@@ -530,6 +639,7 @@ function go(v) {
 document.querySelectorAll("nav button").forEach((b) => b.onclick = () => go(b.dataset.v));
 document.querySelectorAll("#cs button").forEach((b) => b.onclick = () => { if (b.dataset.c !== COMP) setComp(b.dataset.c); });
 setComp(COMP, false);
+$("#sbtn").onclick = openSearch;
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 loadCrests().finally(() => go("live"));
 </script>

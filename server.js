@@ -60,16 +60,16 @@ async function seasonId() {
 
 // ---------- analiza AI ----------
 const league = (e) => e.tournament?.uniqueTournament?.id === TOURNAMENT;
-async function nvidia(messages) {
+async function nvidia(messages, opt = {}) { // opt.think=false: bez fazy rozumowania (szybciej, do krótkich tekstów)
   if (!NV_KEY) throw new HttpErr(500, "Brak zmiennej środowiskowej NVIDIA_API_KEY");
   const r = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${NV_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: NV_MODEL, messages, max_tokens: 6000, temperature: 0.4, top_p: 0.95,
-      chat_template_kwargs: { enable_thinking: true, medium_effort: true },
+      model: NV_MODEL, messages, max_tokens: opt.maxTokens || 6000, temperature: 0.4, top_p: 0.95,
+      chat_template_kwargs: opt.think === false ? { enable_thinking: false } : { enable_thinking: true, medium_effort: true },
     }),
-    signal: AbortSignal.timeout(150000),
+    signal: AbortSignal.timeout(opt.timeout || 150000),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new HttpErr(502, `Błąd NVIDIA API (${r.status}): ${d.detail || d.error?.message || d.message || ""}`);
@@ -1117,7 +1117,7 @@ function teamFacts(season, id, P) {
   return { forma_ostatnie_5: all.slice(-5).map((x) => `${x.r} ${x.gf}:${x.ga} ${x.h ? "u siebie" : "na wyjeździe"} z ${x.opp}`), caly_sezon: rec(all),
     u_siebie: rec(all.filter((x) => x.h)), na_wyjezdzie: rec(all.filter((x) => !x.h)), styl_gry: prof?.tags || [], mocne_strony: prof?.strengths?.slice(0, 2) || [], slabe_strony: prof?.weaknesses?.slice(0, 2) || [] };
 }
-function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 meczów w jednym zapytaniu)
+function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 3 mecze w jednym zapytaniu)
   const st = CS();
   if (st.REASONJOB || !NV_KEY || !DB_URL) return st.REASONJOB || null;
   st.REASONJOB = (async () => {
@@ -1125,7 +1125,7 @@ function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 m
     st.TIPS_AT = 0;
     const stored = await storedTips(), now = Date.now();
     const todo = [...stored.values()].filter((r) => !r.settled_at && Date.parse(r.kickoff) > now && (!r.reason || r.reason_key !== reasonKey(r)))
-      .sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff)).slice(0, 6);
+      .sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff)).slice(0, 3);
     if (!todo.length) return;
     analysisLog = analysisLog.filter((x) => now - x < HOUR);
     if (analysisLog.length >= 18) { st.REASON_ERR = "limit zapytań AI na godzinę"; return; }
@@ -1150,7 +1150,7 @@ function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 m
       "Opierasz się WYŁĄCZNIE na dostarczonych danych: nie wymyślasz kontuzji, składów, transferów ani historii spoza danych. Litera W w formie to wygrana, R remis, P porażka. " +
       "Nie zachęcasz do zakładów, nie podajesz kursów ani stawek. Piszesz po polsku, językiem kibica, bez żargonu statystycznego. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
     const user = `Mecze:\n${JSON.stringify(items)}\n\nZwróć JSON: {"uzasadnienia":[{"id":"id meczu","tekst":"2-3 zdania"}]}`;
-    const text = await nvidia([{ role: "system", content: system }, { role: "user", content: user }]), out = parseJson(text);
+    const text = await nvidia([{ role: "system", content: system }, { role: "user", content: user }], { think: false, maxTokens: 1500, timeout: 120000 }), out = parseJson(text);
     st.REASON_ERR = out?.uzasadnienia?.length ? null : "nieczytelna odpowiedź AI: " + String(text).slice(0, 300);
     for (const u of out?.uzasadnienia || []) {
       const r = todo.find((x) => x.match_id === String(u.id)); if (!r || !u.tekst) continue;

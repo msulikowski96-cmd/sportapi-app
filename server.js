@@ -417,7 +417,8 @@ async function tmSeason() {
     const games = (fx?.fixtures || []).flatMap((d) => d.games || []);
     if (!games.length) throw new HttpErr(502, "Transfermarkt: pusty terminarz");
     const clubs = await tmEntities("/clubs", games.flatMap((g) => [g.homeClub?.clubId, g.awayClub?.clubId]));
-    const nm = (id) => ({ team_id: String(id), name: tmName(id, clubs[id]?.name), short_name: clubs[id]?.baseDetails?.abbreviation, crest: clubs[id]?.crestUrl || null });
+    const nm = (id) => ({ team_id: String(id), name: tmName(id, clubs[id]?.name), short_name: clubs[id]?.baseDetails?.abbreviation, crest: clubs[id]?.crestUrl || null,
+      mv18: clubs[id]?.squadDetails?.top18PlayersMarketValue?.value || clubs[id]?.squadDetails?.currentMarketValue?.value || null });
     const matches = games.map((g) => ({
       src: "tm", match_id: g.gameId, round: g.baseDetails?.gameDay ? `Kolejka ${g.baseDetails.gameDay}` : "Faza pucharowa",
       timestamp: Math.floor(Date.parse(g.baseDetails?.date?.dateTimeUTC) / 1000) || 0,
@@ -928,6 +929,178 @@ async function previewPage(matchId) {
   return { event: fsEv(m), home: side(hid, th), away: side(aid, ta), h2h, loading: !th || !ta, note: seasonNote(season) };
 }
 
+// ---------- typy AI: model Poissona (poprawka Dixona-Colesa) ----------
+// log(oczekiwane gole) = poziom + przewaga gospodarza + atak − obrona rywala + γ·(wartość kadry − wartość kadry rywala)
+// Siły ataku/obrony ściągane do zera (ridge), więc przy małej liczbie meczów decyduje wartość kadry (top 18, Transfermarkt).
+// parametry dobrane testem wstecznym (sezon 2026/27, 4 rozgrywki, ~350 meczów) pod najlepszą kalibrację prawdopodobieństw
+const TIP_RIDGE = 30, TIP_RHO = -0.05, TIP_DECAY = 0.004, TIP_G0 = 0.25, TIP_GS = 100;
+function tipData(season) {
+  const mv = new Map();
+  for (const m of season.matches) for (const t of [m.home_team, m.away_team]) if (t.mv18) mv.set(t.team_id, t.mv18);
+  const done = season.matches.filter((m) => m.status === "finished" && m.home != null && m.away != null && m.timestamp)
+    .map((m) => ({ h: m.home_team.team_id, a: m.away_team.team_id, gh: m.home, ga: m.away, t: m.timestamp }));
+  return { mv, done };
+}
+function fitTips(done, mv, asOf) {
+  const ids = [...new Set([...mv.keys(), ...done.flatMap((m) => [m.h, m.a])])], ix = new Map(ids.map((id, i) => [id, i])), N = ids.length;
+  const lmv = ids.map((id) => (mv.get(id) ? Math.log(mv.get(id)) : null)), known = lmv.filter((x) => x != null);
+  const mean = known.reduce((a, b) => a + b, 0) / (known.length || 1), sd = Math.sqrt(known.reduce((a, b) => a + (b - mean) ** 2, 0) / (known.length || 1)) || 1;
+  const z = lmv.map((x) => (x == null ? 0 : (x - mean) / sd));
+  const att = new Float64Array(N), def = new Float64Array(N);
+  let mu = Math.log(1.3), h = 0.2, g = TIP_G0;
+  const ms = done.map((m) => ({ i: ix.get(m.h), j: ix.get(m.a), gh: m.gh, ga: m.ga, w: Math.exp(-TIP_DECAY * Math.max(0, (asOf - m.t) / 86400)) }));
+  const lam = (m) => { const dz = z[m.i] - z[m.j]; return [Math.exp(mu + h + att[m.i] - def[m.j] + g * dz), Math.exp(mu + att[m.j] - def[m.i] - g * dz), dz]; };
+  // kroki Newtona po kolei dla grup parametrów (poziom, przewaga gospodarza, wpływ kadry, ataki, obrony) – zbiega się stabilnie
+  if (ms.length) for (let it = 0; it < 40; it++) {
+    let G = 0, H = 0;
+    for (const m of ms) { const [lh, la] = lam(m); G += m.w * (m.gh - lh + m.ga - la); H += m.w * (lh + la); } mu += G / H;
+    G = 0; H = 0; for (const m of ms) { const [lh] = lam(m); G += m.w * (m.gh - lh); H += m.w * lh; } h += (G - 2 * (h - 0.2)) / (H + 2);
+    G = 0; H = 0; for (const m of ms) { const [lh, la, dz] = lam(m); G += m.w * ((m.gh - lh) - (m.ga - la)) * dz; H += m.w * (lh + la) * dz * dz; } g += (G - TIP_GS * (g - TIP_G0)) / (H + TIP_GS);
+    const gA = new Float64Array(N), hA = new Float64Array(N);
+    for (const m of ms) { const [lh, la] = lam(m); gA[m.i] += m.w * (m.gh - lh); hA[m.i] += m.w * lh; gA[m.j] += m.w * (m.ga - la); hA[m.j] += m.w * la; }
+    for (let k = 0; k < N; k++) att[k] += (gA[k] - TIP_RIDGE * att[k]) / (hA[k] + TIP_RIDGE);
+    const gD = new Float64Array(N), hD = new Float64Array(N);
+    for (const m of ms) { const [lh, la] = lam(m); gD[m.j] -= m.w * (m.gh - lh); hD[m.j] += m.w * lh; gD[m.i] -= m.w * (m.ga - la); hD[m.i] += m.w * la; }
+    for (let k = 0; k < N; k++) def[k] += (gD[k] - TIP_RIDGE * def[k]) / (hD[k] + TIP_RIDGE);
+  }
+  const P = (hid, aid) => {
+    const i = ix.get(hid), j = ix.get(aid), zi = i == null ? 0 : z[i], zj = j == null ? 0 : z[j];
+    const ai = i == null ? 0 : att[i], aj = j == null ? 0 : att[j], di = i == null ? 0 : def[i], dj = j == null ? 0 : def[j];
+    const lh = Math.exp(mu + h + ai - dj + g * (zi - zj)), la = Math.exp(mu + aj - di - g * (zi - zj));
+    return scoreProbs(lh, la);
+  };
+  const rating = (id) => { const i = ix.get(id); return i == null ? null : { att: att[i], def: def[i], z: z[i] }; };
+  return { P, rating, ids, mu, h, g, n: done.length };
+}
+function scoreProbs(lh, la) {
+  const pois = (l, k) => { let p = Math.exp(-l); for (let x = 1; x <= k; x++) p *= l / x; return p; };
+  let p1 = 0, px = 0, p2 = 0, best = [0, 0, 0], tot = 0; const grid = [];
+  for (let a = 0; a <= 9; a++) for (let b = 0; b <= 9; b++) {
+    let p = pois(lh, a) * pois(la, b);
+    if (a === 0 && b === 0) p *= 1 - lh * la * TIP_RHO; else if (a === 0 && b === 1) p *= 1 + lh * TIP_RHO;
+    else if (a === 1 && b === 0) p *= 1 + la * TIP_RHO; else if (a === 1 && b === 1) p *= 1 - TIP_RHO;
+    grid.push([a, b, p]); tot += p;
+  }
+  for (const [a, b, p0] of grid) { const p = p0 / tot; if (a > b) p1 += p; else if (a === b) px += p; else p2 += p; }
+  const pick = p1 >= px && p1 >= p2 ? "1" : p2 >= px ? "2" : "X";
+  for (const [a, b, p0] of grid) if (outcome(a, b) === pick && p0 / tot > best[2]) best = [a, b, p0 / tot]; // najbardziej prawdopodobny wynik zgodny z typem
+  return { p1, px, p2, pick, xgH: lh, xgA: la, score: [best[0], best[1]], pScore: best[2] };
+}
+const outcome = (a, b) => (a > b ? "1" : a < b ? "2" : "X");
+function tipModel(season) { // model na wszystkich zakończonych meczach (pamięć do zmiany liczby meczów)
+  const st = CS(), { mv, done } = tipData(season), key = done.length + ":" + mv.size;
+  if (st.TIPM?.key !== key) st.TIPM = { key, m: fitTips(done, mv, Math.floor(Date.now() / 1000)) };
+  return st.TIPM.m;
+}
+function tipBacktest(season) { // test wsteczny: każdą kolejkę typuje model znający tylko wcześniejsze mecze
+  const st = CS(), { mv, done } = tipData(season), key = done.length + ":" + mv.size;
+  if (st.TIPB?.key === key) return st.TIPB.v;
+  const byRound = new Map();
+  for (const m of season.matches) { const r = roundNo(m.round); if (!r || m.status !== "finished" || m.home == null) continue; (byRound.get(r) || byRound.set(r, []).get(r)).push(m); }
+  let n = 0, hit = 0, exact = 0, brier = 0, home = 0, fav = 0, draws = 0;
+  const rounds = [];
+  for (const r of [...byRound.keys()].sort((a, b) => a - b)) {
+    const ms = byRound.get(r), start = Math.min(...ms.map((m) => m.timestamp));
+    const model = fitTips(done.filter((d) => d.t < start - 3600), mv, start);
+    let rn = 0, rh = 0;
+    for (const m of ms) {
+      const p = model.P(m.home_team.team_id, m.away_team.team_id), o = outcome(m.home, m.away);
+      n++; rn++; if (p.pick === o) { hit++; rh++; } if (p.score[0] === m.home && p.score[1] === m.away) exact++;
+      brier += (p.p1 - (o === "1")) ** 2 + (p.px - (o === "X")) ** 2 + (p.p2 - (o === "2")) ** 2;
+      if (o === "1") home++; if (o === "X") draws++;
+      const mh = mv.get(m.home_team.team_id) || 0, ma = mv.get(m.away_team.team_id) || 0;
+      if ((mh >= ma ? "1" : "2") === o) fav++;
+    }
+    rounds.push({ round: r, n: rn, hit: rh });
+  }
+  const v = { n, hit, acc: n ? hit / n : null, exact: n ? exact / n : null, brier: n ? brier / n : null,
+    baseHome: n ? home / n : null, baseValue: n ? fav / n : null, drawShare: n ? draws / n : null, rounds };
+  st.TIPB = { key, v };
+  return v;
+}
+// --- baza: typ zapisany przed meczem (aktualizowany najpóźniej 1 h przed startem), potem rozliczany ---
+const DB_URL = process.env.DATABASE_URL;
+async function sql(query, params = []) {
+  if (!DB_URL) throw new HttpErr(503, "Brak zmiennej środowiskowej DATABASE_URL (zapisywanie typów wyłączone)");
+  const r = await fetch(`https://${new URL(DB_URL).host}/sql`, { method: "POST", headers: { "Neon-Connection-String": DB_URL, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, params }), signal: AbortSignal.timeout(20000) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new HttpErr(502, `Baza danych: ${d.message || r.status}`);
+  return d.rows || [];
+}
+let tipsSchema = null;
+const ensureTipsSchema = () => (tipsSchema ||= sql(`CREATE TABLE IF NOT EXISTS ai_tips (
+  comp text NOT NULL, match_id text NOT NULL, round int, kickoff timestamptz NOT NULL, home text, away text, home_id text, away_id text,
+  p_home real, p_draw real, p_away real, pick text, xg_home real, xg_away real, score_h int, score_a int,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  res_h int, res_a int, settled_at timestamptz, correct boolean, exact boolean, brier real, PRIMARY KEY (comp, match_id))`).catch((e) => { tipsSchema = null; throw e; }));
+const TIP_HORIZON = 7 * 86400, TIP_FREEZE = 3600;
+async function syncTips() { // zapis typów na najbliższe 7 dni + rozliczenie zakończonych meczów (bieżące rozgrywki)
+  if (!DB_URL) return { off: true };
+  await ensureTipsSchema();
+  const season = await tmSeason(), model = tipModel(season), now = Math.floor(Date.now() / 1000), c = comp();
+  const up = season.matches.filter((m) => m.status === "notstarted" && m.timestamp > now + TIP_FREEZE && m.timestamp < now + TIP_HORIZON);
+  let saved = 0, settled = 0;
+  for (const m of up) {
+    const p = model.P(m.home_team.team_id, m.away_team.team_id);
+    await sql(`INSERT INTO ai_tips (comp, match_id, round, kickoff, home, away, home_id, away_id, p_home, p_draw, p_away, pick, xg_home, xg_away, score_h, score_a)
+      VALUES ($1,$2,$3,to_timestamp($4),$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      ON CONFLICT (comp, match_id) DO UPDATE SET kickoff = EXCLUDED.kickoff, p_home = EXCLUDED.p_home, p_draw = EXCLUDED.p_draw, p_away = EXCLUDED.p_away, pick = EXCLUDED.pick,
+        xg_home = EXCLUDED.xg_home, xg_away = EXCLUDED.xg_away, score_h = EXCLUDED.score_h, score_a = EXCLUDED.score_a, updated_at = now()
+      WHERE ai_tips.settled_at IS NULL AND now() < ai_tips.kickoff - interval '1 hour' AND now() < EXCLUDED.kickoff - interval '1 hour'`,
+      [c, String(m.match_id), roundNo(m.round), m.timestamp, m.home_team.name, m.away_team.name, m.home_team.team_id, m.away_team.team_id,
+        p.p1, p.px, p.p2, p.pick, p.xgH, p.xgA, p.score[0], p.score[1]]);
+    saved++;
+  }
+  const open = await sql(`SELECT match_id, p_home, p_draw, p_away, pick, score_h, score_a FROM ai_tips WHERE comp = $1 AND settled_at IS NULL AND kickoff < now()`, [c]);
+  const byId = new Map(season.matches.map((m) => [String(m.match_id), m]));
+  for (const t of open) {
+    const m = byId.get(t.match_id); if (!m || m.status !== "finished" || m.home == null) continue;
+    const o = outcome(m.home, m.away), br = (t.p_home - (o === "1")) ** 2 + (t.p_draw - (o === "X")) ** 2 + (t.p_away - (o === "2")) ** 2;
+    await sql(`UPDATE ai_tips SET res_h = $3, res_a = $4, correct = $5, exact = $6, brier = $7, settled_at = now() WHERE comp = $1 AND match_id = $2`,
+      [c, t.match_id, m.home, m.away, t.pick === o, t.score_h === m.home && t.score_a === m.away, br]);
+    settled++;
+  }
+  CS().TIPS_AT = 0; // odśwież pamięć typów
+  return { saved, settled };
+}
+async function storedTips() { // zapisane typy bieżących rozgrywek (pamięć 60 s)
+  const st = CS();
+  if (!DB_URL) return new Map();
+  if (st.TIPS && Date.now() - st.TIPS_AT < 60000) return st.TIPS;
+  try { await ensureTipsSchema(); const rows = await sql(`SELECT * FROM ai_tips WHERE comp = $1`, [comp()]); st.TIPS = new Map(rows.map((r) => [r.match_id, r])); st.TIPS_AT = Date.now(); }
+  catch { st.TIPS ||= new Map(); }
+  return st.TIPS;
+}
+function tipFor(m, model, stored) { // typ do pokazania przy meczu: zapisany (zamrożony) albo wstępny
+  const s = stored.get(String(m.match_id));
+  if (s) return { p1: s.p_home, px: s.p_draw, p2: s.p_away, pick: s.pick, score: [s.score_h, s.score_a], xg: [s.xg_home, s.xg_away], saved: true, savedAt: s.updated_at,
+    settled: !!s.settled_at, correct: s.correct, exact: s.exact };
+  if (m.status !== "notstarted") return null; // po starcie bez zapisanego typu nic nie pokazujemy (nie dopisujemy typów wstecz)
+  const p = model.P(m.home_team.team_id, m.away_team.team_id);
+  return { p1: p.p1, px: p.px, p2: p.p2, pick: p.pick, score: p.score, xg: [p.xgH, p.xgA], saved: false };
+}
+async function tipsRoute() {
+  const season = await tmSeason(), stored = await storedTips(), bt = tipBacktest(season);
+  syncTips().catch(() => {});
+  const rows = [...stored.values()].sort((a, b) => Date.parse(b.kickoff) - Date.parse(a.kickoff));
+  const set = rows.filter((r) => r.settled_at), n = set.length;
+  const home = set.filter((r) => r.res_h > r.res_a).length;
+  const live = { n, hit: set.filter((r) => r.correct).length, exact: set.filter((r) => r.exact).length, brier: n ? set.reduce((a, r) => a + r.brier, 0) / n : null, baseHome: n ? home / n : null };
+  const T = (r) => ({ id: "tm-" + r.match_id, round: r.round, kickoff: r.kickoff, home: r.home, away: r.away, p1: r.p_home, px: r.p_draw, p2: r.p_away, pick: r.pick,
+    score: [r.score_h, r.score_a], res: r.settled_at ? [r.res_h, r.res_a] : null, correct: r.correct, exact: r.exact });
+  return { db: !!DB_URL, since: rows.length ? rows[rows.length - 1].created_at : null, live, backtest: bt,
+    upcoming: rows.filter((r) => !r.settled_at && Date.parse(r.kickoff) > Date.now()).reverse().map(T), recent: set.slice(0, 40).map(T) };
+}
+async function tipRoute(matchId) {
+  const season = await tmSeason(), m = season.matches.find((x) => String(x.match_id) === String(matchId));
+  if (!m) throw new HttpErr(404, "Nie znaleziono meczu");
+  const model = tipModel(season), tip = tipFor(m, model, await storedTips());
+  const { mv } = tipData(season), rh = model.rating(m.home_team.team_id), ra = model.rating(m.away_team.team_id);
+  return { tip, home: { name: m.home_team.name, mv: mv.get(m.home_team.team_id) || null, ...rh }, away: { name: m.away_team.name, mv: mv.get(m.away_team.team_id) || null, ...ra },
+    homeAdv: Math.exp(model.h) - 1, matches: model.n, kickoff: m.timestamp };
+}
+
 // ---------- podsumowanie kolejki (liczby + odstępstwa od normy + tekst AI, bez prognoz) ----------
 function standingsUpTo(season, r) {
   const t = new Map();
@@ -1121,6 +1294,7 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
     ensureGames(season); info.games = CS().GAMES.map.size;
     for (const c of ["CL", "EL", "UCOL"]) await ALS.run(c, async () => { const s2 = await tmSeason(); await ensureGames(s2); info["games" + c] = CS().GAMES.map.size; }).catch(() => {});
     await ensureGames(season);
+    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { info["tips" + c] = await syncTips(); }).catch((e) => { info["tips" + c] = String(e.message || e); });
     for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { if (analysisLog.filter((t) => Date.now() - t < HOUR).length < 14) await recapRoute(); }).catch(() => {});
     searchIndex();
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
@@ -1172,7 +1346,9 @@ async function route(p, qs = new URLSearchParams()) {
   if ((m = p.match(/^\/api\/round\/(\d{1,2})$/))) {
     return withFs(async () => {
       const s = await anySeason();
-      return { events: s.matches.filter((x) => roundNo(x.round) === Number(m[1])).map(fsEv), note: seasonNote(s) };
+      let tipOf = () => null;
+      if (s.tm) { try { const model = tipModel(s), stored = await storedTips(); tipOf = (x) => tipFor(x, model, stored); } catch {} }
+      return { events: s.matches.filter((x) => roundNo(x.round) === Number(m[1])).map((x) => ({ ...fsEv(x), tip: tipOf(x) })), note: seasonNote(s) };
     }, async () => {
       const s = await seasonId();
       return callApi(`/api/v1/unique-tournament/${TOURNAMENT}/season/${s}/events/round/${m[1]}`, 300000);
@@ -1219,6 +1395,8 @@ async function route(p, qs = new URLSearchParams()) {
   }
   if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
   if ((m = p.match(/^\/api\/recap(?:\/(\d+))?$/))) return { status: 200, data: await recapRoute(m[1] ? +m[1] : undefined) };
+  if (p === "/api/tips") return { status: 200, data: await tipsRoute() };
+  if ((m = p.match(/^\/api\/tip\/tm-(\d+)$/))) return { status: 200, data: await tipRoute(m[1]) };
   if (p === "/api/search") return { status: 200, data: searchRoute(qs.get("q") || "") };
   if (p === "/api/values") return { status: 200, data: await valuesRoute() };
   if ((m = p.match(/^\/api\/player-ai\/(\d+)$/))) return { status: 200, data: await playerAi(m[1]) };

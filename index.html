@@ -70,7 +70,7 @@
   tr.click { cursor:pointer; } tr.click:hover td.t { color:var(--acc); }
   .ld { display:grid; grid-template-columns:28px 1fr auto; gap:10px; align-items:center; padding:10px 2px; border-top:1px solid var(--line); } .ld:first-child { border-top:0; } .ld .r { color:var(--mut); font-size:18px; font-weight:700; font-stretch:75%; } .ld b { font-size:25px; font-weight:800; font-stretch:72%; }
   .prog { height:6px; background:var(--s2); border-radius:3px; overflow:hidden; margin:10px 0; } .prog i { display:block; height:100%; background:var(--acc); transition:width .4s; }
-  .big { display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; text-align:center; } .big .n { font-size:19px; font-weight:800; font-stretch:112%; line-height:1.15; } .big .t { display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .big { display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; text-align:center; } .big .n { font-size:18px; font-weight:800; font-stretch:100%; line-height:1.15; overflow-wrap:anywhere; hyphens:auto; } .big { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); } .big .t { display:flex; flex-direction:column; align-items:center; gap:8px; }
   .big .s { font-size:54px; font-weight:900; font-stretch:68%; line-height:1; font-variant-numeric:tabular-nums; }
   .sub { text-align:center; color:var(--mut); font-size:13px; margin:10px 0 4px; }
   .inc { display:grid; grid-template-columns:1fr 46px 1fr; gap:6px; font-size:14px; padding:5px 0; border-top:1px solid var(--line); } .inc .h { text-align:right; } .inc .mn { text-align:center; color:var(--mut); font-weight:700; font-stretch:75%; }
@@ -127,6 +127,13 @@
   .rng .mk.b span { top:24px; }
   .fc { display:grid; grid-template-columns:1fr 80px 52px; gap:8px; align-items:center; font-size:13px; padding:4px 0; } .fc .bar { height:7px; border-radius:99px; background:var(--s2); position:relative; overflow:hidden; } .fc .bar i { position:absolute; top:0; bottom:0; }
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
+  .tl { font-size:12px; color:var(--mut); margin-top:3px; } .tl b { color:var(--acc); font-weight:800; } .tl.ok { color:var(--acc); } .tl.no { color:var(--red); }
+  .pb { display:flex; height:12px; border-radius:3px; overflow:hidden; gap:2px; margin:14px 0 6px; } .pb i { display:block; height:100%; }
+  .pbl { display:grid; grid-template-columns:1fr auto 1fr; gap:8px; font-size:12.5px; color:var(--mut); } .pbl b { font-size:17px; font-weight:800; font-stretch:72%; margin-right:3px; }
+  .tipm { display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:end; } .tipm div { display:flex; flex-direction:column; } .tipm b { font-size:44px; font-weight:900; font-stretch:68%; line-height:1; color:var(--acc); margin:2px 0; }
+  .tr { display:grid; grid-template-columns:1fr auto; grid-template-rows:auto auto; column-gap:10px; padding:9px 0; border-top:1px solid var(--line); cursor:pointer; font-size:14px; } .tr:first-of-type { border-top:0; }
+  .tr .tt2 { display:flex; align-items:center; gap:7px; grid-column:1; } .tr .tv { grid-column:2; grid-row:1 / 3; text-align:right; align-self:center; font-size:12px; color:var(--mut); }
+  .tr .tv b { font-size:20px; font-weight:800; font-stretch:72%; color:var(--txt); } .tr .tv .ok { color:var(--acc); } .tr .tv .no { color:var(--red); } .tr:hover .tt2 span { color:var(--acc); }
   .sbtn { position:absolute; right:18px; top:18px; z-index:2; width:44px; height:44px; border-radius:50%; background:var(--bg2); border:2px solid rgba(238,243,234,.24); color:var(--txt); display:grid; place-items:center; cursor:pointer; transition:background-color .4s; }
   .sbtn:hover { border-color:var(--acc); } .sbtn svg, .sin svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
   header .ttl { padding-right:56px; }
@@ -202,7 +209,7 @@ function matchRow(e) {
   const d = e.status?.description || "";
   const left = live ? (/^[~\d]|przerwa/.test(d) ? d : "LIVE") : st === "finished" ? "KON." : fmtTime(e.startTimestamp);
   return `<div class="m" data-id="${e.id}"><div class="tm ${live ? "live" : ""}">${left}</div>
-    <div><div class="tt">${badge(e.homeTeam?.name, 24)}${esc(e.homeTeam?.name)}</div><div class="tt">${badge(e.awayTeam?.name, 24)}${esc(e.awayTeam?.name)}</div></div>
+    <div><div class="tt">${badge(e.homeTeam?.name, 24)}${esc(e.homeTeam?.name)}</div><div class="tt">${badge(e.awayTeam?.name, 24)}${esc(e.awayTeam?.name)}</div>${tipLine(e)}</div>
     <div class="sc">${sc ? `<div>${e.homeScore?.current ?? "-"}</div><div>${e.awayScore?.current ?? "-"}</div>` : ""}</div></div>`;
 }
 function bindRows() { document.querySelectorAll(".m[data-id]").forEach((el) => el.onclick = () => openMatch(el.dataset.id)); }
@@ -263,13 +270,14 @@ async function showDay(why) {
   } catch (e2) { app.innerHTML = `<p class="err">${esc(why || e2.message)}</p><p class="mini">Tryb zastępczy też niedostępny: ${esc(e2.message)}</p>`; }
 }
 
-const TAB_MODES = [["all", "Ogółem"], ["home", "U siebie"], ["away", "Na wyjeździe"], ["form", "Forma (5)"], ["scorers", "Strzelcy"], ["assists", "Asysty"], ["cards", "Kartki"], ["values", "Wyceny AI"]];
+const TAB_MODES = [["all", "Ogółem"], ["home", "U siebie"], ["away", "Na wyjeździe"], ["form", "Forma (5)"], ["scorers", "Strzelcy"], ["assists", "Asysty"], ["cards", "Kartki"], ["values", "Wyceny AI"], ["tips", "Typy AI"]];
 const pills = () => `<div class="pills">${TAB_MODES.map(([k, t]) => `<button data-m="${k}" class="${k === tabMode ? "on" : ""}">${t}</button>`).join("")}</div>`;
-function bindPills() { document.querySelectorAll(".pills button").forEach((b) => b.onclick = () => { tabMode = b.dataset.m; showTable(); }); }
+function bindPills() { document.querySelectorAll(".pills button").forEach((b) => b.onclick = () => { tabMode = b.dataset.m; showTable(); }); document.querySelector(".pills button.on")?.scrollIntoView({ inline: "center", block: "nearest" }); }
 async function showTable() {
   clearTimeout(timer); clearInterval(timer); timer = null;
   if (["scorers", "assists", "cards"].includes(tabMode)) return showLeaders();
   if (tabMode === "values") return showValues();
+  if (tabMode === "tips") return showTips();
   loading();
   try {
     const tb = await api(tabMode === "all" ? "/api/table" : `/api/table/${tabMode}`), rows = tb.standings[0].rows, n = rows.length;
@@ -445,6 +453,57 @@ function openSearch() {
 }
 document.addEventListener("keydown", (e) => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || "")) { e.preventDefault(); openSearch(); } });
 
+// ---------- typy AI ----------
+const pct = (x) => (x == null ? "–" : Math.round(x * 100) + "%");
+const pick3 = { "1": "wygrana gospodarzy", X: "remis", "2": "wygrana gości" };
+function tipLine(e) { // linijka pod drużynami w liście meczów
+  const t = e.tip, st = e.status?.type; if (!t) return "";
+  const best = t.pick === "1" ? t.p1 : t.pick === "2" ? t.p2 : t.px;
+  if (st === "finished" && t.settled) return `<div class="tl ${t.correct ? "ok" : "no"}">Typ AI ${t.pick} · ${t.score.join(":")} · ${t.correct ? (t.exact ? "trafiony co do wyniku ✓" : "trafiony ✓") : "nietrafiony ✗"}</div>`;
+  if (st === "notstarted") return `<div class="tl">Typ AI <b>${t.pick}</b> · ${t.score.join(":")} · ${pct(best)}${t.saved ? "" : " · wstępny"}</div>`;
+  return t.saved ? `<div class="tl">Typ AI ${t.pick} · ${t.score.join(":")}</div>` : "";
+}
+function probBar(t, hn, an) {
+  return `<div class="pb"><i style="width:${t.p1 * 100}%;background:var(--acc)"></i><i style="width:${t.px * 100}%;background:rgba(238,243,234,.35)"></i><i style="width:${t.p2 * 100}%;background:var(--blue)"></i></div>
+    <div class="pbl"><span><b style="color:var(--acc)">${pct(t.p1)}</b> ${esc(hn)}</span><span><b>${pct(t.px)}</b> remis</span><span style="text-align:right"><b style="color:var(--blue)">${pct(t.p2)}</b> ${esc(an)}</span></div>`;
+}
+function tipCard(d, hn, an) {
+  const t = d.tip; if (!t) return "";
+  const rel = (x) => { const v = Math.round((Math.exp(x) - 1) * 100); return (v >= 0 ? "+" : "") + v + "%"; };
+  const side = (s) => `<div><b style="font-size:13px">${tn(s.name)}</b><div class="mini" style="line-height:1.7">kadra (top 18): <b style="color:var(--txt)">${mlnE(s.mv)}</b><br>atak: <b style="color:var(--txt)">${s.att == null ? "–" : rel(s.att)}</b> · obrona: <b style="color:var(--txt)">${s.def == null ? "–" : rel(s.def)}</b></div></div>`;
+  return `<div class="card tipc"><h3 style="margin-top:0">Typ AI</h3>
+    <div class="tipm"><div><span class="mini">typ</span><b>${t.pick}</b><span class="mini">${pick3[t.pick]}</span></div><div><span class="mini">najbardziej prawdopodobny wynik</span><b>${t.score.join(":")}</b><span class="mini">oczekiwane gole ${t.xg.map((x) => x.toFixed(1).replace(".", ",")).join(" – ")}</span></div></div>
+    ${probBar(t, hn, an)}
+    <div class="grid2" style="margin-top:12px">${side(d.home)}${side(d.away)}</div>
+    <p class="mini" style="margin:10px 0 0">Atak i obrona to siła drużyny w tym sezonie względem przeciętnej (po uwzględnieniu rywali), a wartość kadry pomaga, gdy meczów jest mało. Przewaga własnego boiska: ${rel(Math.log(1 + d.homeAdv))} goli.
+      ${t.saved ? `Typ jest zapisany (ostatnia aktualizacja ${new Date(t.savedAt).toLocaleString("pl-PL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}) i zamyka się godzinę przed meczem, a potem trafia do statystyk.` : "To typ wstępny: zapisze się do statystyk w tygodniu przed meczem."}
+      To statystyczna prognoza, nie porada do zakładów.</p></div>`;
+}
+async function showTips() {
+  try {
+    app.innerHTML = pills() + `<p class="mut">Ładuję typy…</p>`; bindPills();
+    const d = await api("/api/tips");
+    if (tabMode !== "tips" || view !== "table") return;
+    const L = d.live, B = d.backtest;
+    const row = (t) => `<div class="tr" data-id="${t.id}"><div class="tt2">${badge(t.home, 20)}<span>${esc(t.home)}</span></div><div class="tt2">${badge(t.away, 20)}<span>${esc(t.away)}</span></div>
+      <div class="tv">${t.res ? `<b>${t.res.join(":")}</b>` : `<span class="mini">${fmtDay(Date.parse(t.kickoff) / 1000)}</span>`}<div class="${t.res ? (t.correct ? "ok" : "no") : ""}">typ ${t.pick} · ${t.score.join(":")}${t.res ? (t.correct ? " ✓" : " ✗") : ` · ${pct(t.pick === "1" ? t.p1 : t.pick === "2" ? t.p2 : t.px)}`}</div></div></div>`;
+    const bars = B.rounds.map((r) => `<div title="Kolejka ${r.round}: ${r.hit}/${r.n}" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px"><div style="width:100%;height:${Math.max(3, (r.hit / r.n) * 64)}px;background:${r.hit / r.n >= 0.5 ? "var(--acc)" : "rgba(238,243,234,.3)"};border-radius:3px 3px 0 0"></div><span class="mini" style="font-size:10px">${r.round}</span></div>`).join("");
+    app.innerHTML = pills() + `
+      <div class="card"><h3 style="margin-top:0">Skuteczność typów na żywo</h3>
+        ${!d.db ? `<p class="mini" style="margin:0">Zapisywanie typów jest wyłączone (brak bazy danych).</p>` : L.n ? `<div class="kpis"><div class="kpi"><b>${pct(L.hit / L.n)}</b><span>trafionych (${L.hit} z ${L.n})</span></div><div class="kpi"><b>${pct(L.exact / L.n)}</b><span>dokładny wynik</span></div><div class="kpi"><b>${pct(L.baseHome)}</b><span>„zawsze gospodarz”</span></div><div class="kpi"><b>${L.brier.toFixed(2).replace(".", ",")}</b><span>Brier (mniej = lepiej)</span></div></div>
+          <p class="mini" style="margin:10px 0 0">Liczą się tylko typy zapisane przed meczem (zamykane godzinę przed startem), od ${fmtDate(d.since)}.</p>`
+          : `<p class="mini" style="margin:0">Typy zapisują się przed meczami od ${d.since ? fmtDate(d.since) : "teraz"}. Pierwsze rozliczą się po najbliższych meczach. Do tego czasu skuteczność pokazuje test wsteczny poniżej.</p>`}</div>
+      <div class="card"><h3 style="margin-top:0">Test wsteczny tego sezonu</h3>
+        <div class="kpis"><div class="kpi"><b>${pct(B.acc)}</b><span>trafionych (${B.hit} z ${B.n})</span></div><div class="kpi"><b>${pct(B.exact)}</b><span>dokładny wynik</span></div><div class="kpi"><b>${pct(B.baseHome)}</b><span>„zawsze gospodarz”</span></div><div class="kpi"><b>${pct(B.baseValue)}</b><span>„wygra droższa kadra”</span></div></div>
+        ${B.rounds.length ? `<div style="display:flex;gap:4px;align-items:flex-end;height:86px;margin-top:14px">${bars}</div><p class="mini" style="margin:4px 0 0">Trafność w kolejnych kolejkach (żółte: co najmniej połowa).</p>` : ""}
+        <p class="mini" style="margin:8px 0 0">Model typuje każdą kolejkę, znając tylko mecze rozegrane wcześniej. Parametry modelu dobrano jednak na tych samych meczach, więc wynik na żywo może wyjść trochę słabiej.</p></div>
+      ${d.upcoming.length ? `<div class="card"><h3 style="margin-top:0">Najbliższe typy</h3>${d.upcoming.map(row).join("")}</div>` : ""}
+      ${d.recent.length ? `<div class="card"><h3 style="margin-top:0">Rozliczone typy</h3>${d.recent.map(row).join("")}</div>` : ""}
+      <p class="mini">Typ AI to model statystyczny (rozkład Poissona z poprawką Dixona-Colesa): siła ataku i obrony drużyn z tego sezonu, przewaga własnego boiska i wartość kadr z Transfermarktu. Nie uwzględnia składów, kontuzji ani motywacji. To prognoza, nie porada do zakładów.</p>`;
+    bindPills(); document.querySelectorAll(".tr[data-id]").forEach((el) => el.onclick = () => openMatch(el.dataset.id));
+  } catch (e) { app.innerHTML = pills() + `<p class="err">${esc(e.message)}</p>`; bindPills(); }
+}
+
 function incLine(i) {
   const home = i.isHome === true; let txt = null;
   if (i.incidentType === "goal") txt = `⚽ ${esc(i.player?.name || "Gol")}${i.incidentClass === "ownGoal" ? " (sam.)" : i.incidentClass === "penalty" ? " (k.)" : ""}`;
@@ -456,11 +515,13 @@ const head = (e, mid) => `<div class="big"><div class="t">${badge(e.homeTeam?.na
 async function openMatch(id) {
   clearInterval(timer); timer = null; loading("Ładowanie meczu…"); window.scrollTo({ top: 0 });
   try {
-    const [ev, inc, stats, lu] = await Promise.all([api(`/api/event/${id}`), api(`/api/event/${id}/incidents`).catch(() => ({})), api(`/api/event/${id}/stats`).catch(() => ({})), api(`/api/event/${id}/lineups`).catch(() => ({}))]);
+    const [ev, inc, stats, lu, T] = await Promise.all([api(`/api/event/${id}`), api(`/api/event/${id}/incidents`).catch(() => ({})), api(`/api/event/${id}/stats`).catch(() => ({})), api(`/api/event/${id}/lineups`).catch(() => ({})),
+      String(id).startsWith("tm-") ? api(`/api/tip/${id}`).catch(() => null) : null]);
     const e = ev.event, played = ["inprogress", "finished"].includes(e.status?.type);
     if (!played && String(id).startsWith("tm-") && e.status?.type === "notstarted") return showPreview(id);
     let html = `<button class="btn back" id="bk">‹ Wróć</button><div class="card">${head(e, `${e.homeScore?.current ?? 0}:${e.awayScore?.current ?? 0}`)}
       <div class="sub">${esc(e.status?.description || "")} · ${esc(fmtDay(e.startTimestamp))} ${fmtTime(e.startTimestamp)}<br>${esc([e.venue?.stadium?.name, e.venue?.city?.name].filter(Boolean).join(", "))}${e.referee?.name ? " · sędzia: " + esc(e.referee.name) : ""}</div>`;
+    if (T?.tip?.saved) { const t = T.tip; html += `<div class="tl ${t.settled ? (t.correct ? "ok" : "no") : ""}" style="margin-top:10px;font-size:13px">Typ AI przed meczem: <b>${t.pick}</b> · ${t.score.join(":")} (${pct(t.p1)} / ${pct(t.px)} / ${pct(t.p2)})${t.settled ? (t.correct ? (t.exact ? " · trafiony co do wyniku ✓" : " · trafiony ✓") : " · nietrafiony ✗") : ""}</div>`; }
     const lines = (inc.incidents || []).filter((i) => ["goal", "card"].includes(i.incidentType)).sort((a, b) => a.time - b.time).map(incLine).join("");
     if (lines) html += `<h3>Przebieg</h3>${lines}`;
     const grp = (stats.statistics || []).find((s) => s.period === "ALL")?.groups?.[0]?.statisticsItems || [];
@@ -478,7 +539,7 @@ function cmpRows(defs, A, B) {
 }
 async function showPreview(id, tries = 0) {
   try {
-    const [d, P] = await Promise.all([api(`/api/preview/${id}`), api("/api/profiles").catch(() => null)]);
+    const [d, P, T] = await Promise.all([api(`/api/preview/${id}`), api("/api/profiles").catch(() => null), api(`/api/tip/${id}`).catch(() => null)]);
     const e = d.event, hn = e.homeTeam.name, an = e.awayTeam.name;
     const formRow = (t) => `<div class="chips">${[...t.form].reverse().map((m) => `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div>`;
     const tr = (t) => t.table ? `${t.table.position}. miejsce · ${t.table.points} pkt · bramki ${t.table.scoresFor}:${t.table.scoresAgainst}` : "";
@@ -487,6 +548,7 @@ async function showPreview(id, tries = 0) {
     const A = P?.ready && P.teams.find((t) => t.id === d.home.id), B = P?.ready && P.teams.find((t) => t.id === d.away.id);
     let h = `<button class="btn back" id="bk">‹ Wróć</button><div class="card">${head(e, fmtTime(e.startTimestamp))}<div class="sub">Zaplanowany · ${esc(fmtDay(e.startTimestamp))}</div>
       <div class="grid2" style="margin-top:12px"><div><div class="mini">${esc(tr(d.home))}</div>${formRow(d.home)}</div><div style="text-align:right"><div class="mini">${esc(tr(d.away))}</div><div class="chips" style="justify-content:flex-end">${[...d.away.form].reverse().map((m) => `<div class="chip ${m.res}" title="${esc(m.opponent)} ${m.gf}:${m.ga}">${m.res}</div>`).join("")}</div></div></div>`;
+    if (T?.tip) h += `</div>${tipCard(T, hn, an)}<div class="card">`;
     if (A && B) {
       const keys = ["gf", "ga", "poss", "passAcc", "shots", "shotsAg", "corners", "fouls"], defs = keys.map((k) => P.defs.find((x) => x.key === k));
       h += `<h3>Jak grają – zestawienie</h3>${cmpRows(defs, A, B)}<div class="grid2" style="margin-top:10px"><div>${A.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div><div style="text-align:right">${B.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div></div>

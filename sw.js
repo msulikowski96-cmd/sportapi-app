@@ -1,5 +1,5 @@
 // Service worker: sieć w pierwszej kolejności dla strony, API nigdy nie jest cache'owane.
-const CACHE = "ekstraklasa-v11";
+const CACHE = "ekstraklasa-v12";
 const ROOT = new URL("./", self.location).pathname; // "/" na Render, "/sportapi-app/" na GitHub Pages
 self.addEventListener("install", (e) => { self.skipWaiting(); e.waitUntil(caches.open(CACHE).then((c) => c.addAll([ROOT, ROOT + "icon.svg"])).catch(() => {})); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });

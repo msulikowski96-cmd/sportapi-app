@@ -1101,6 +1101,77 @@ async function tipRoute(matchId) {
     homeAdv: Math.exp(model.h) - 1, matches: model.n, kickoff: m.timestamp };
 }
 
+// ---------- prognozy: typ modelu + krótkie uzasadnienie AI dla każdego nadchodzącego meczu ----------
+let reasonCols = null;
+const ensureReasonCols = () => (reasonCols ||= ensureTipsSchema()
+  .then(() => sql(`ALTER TABLE ai_tips ADD COLUMN IF NOT EXISTS reason text, ADD COLUMN IF NOT EXISTS reason_key text, ADD COLUMN IF NOT EXISTS reason_at timestamptz`))
+  .catch((e) => { reasonCols = null; throw e; }));
+const reasonKey = (r) => `${r.pick}:${Math.round(r.p_home * 20)}:${Math.round(r.p_draw * 20)}:${Math.round(r.p_away * 20)}`; // nowe uzasadnienie, gdy typ zmieni się o ≥5 pkt proc.
+function teamFacts(season, id, P) {
+  const fin = season.matches.filter((m) => m.status === "finished" && m.home != null && (m.home_team.team_id === id || m.away_team.team_id === id)).sort((a, b) => a.timestamp - b.timestamp);
+  const res = (m) => { const h = m.home_team.team_id === id, gf = h ? m.home : m.away, ga = h ? m.away : m.home;
+    return { h, gf, ga, opp: h ? m.away_team.name : m.home_team.name, r: gf > ga ? "W" : gf < ga ? "P" : "R", pts: gf > ga ? 3 : gf === ga ? 1 : 0 }; };
+  const all = fin.map(res), rec = (a) => (a.length ? { mecze: a.length, pkt_na_mecz: +(a.reduce((s, x) => s + x.pts, 0) / a.length).toFixed(2),
+    bramki: `${a.reduce((s, x) => s + x.gf, 0)}:${a.reduce((s, x) => s + x.ga, 0)}` } : null);
+  const prof = P?.teams?.find((t) => t.id === "tm-" + id);
+  return { forma_ostatnie_5: all.slice(-5).map((x) => `${x.r} ${x.gf}:${x.ga} ${x.h ? "u siebie" : "na wyjeździe"} z ${x.opp}`), caly_sezon: rec(all),
+    u_siebie: rec(all.filter((x) => x.h)), na_wyjezdzie: rec(all.filter((x) => !x.h)), styl_gry: prof?.tags || [], mocne_strony: prof?.strengths?.slice(0, 2) || [], slabe_strony: prof?.weaknesses?.slice(0, 2) || [] };
+}
+function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 meczów w jednym zapytaniu)
+  const st = CS();
+  if (st.REASONJOB || !NV_KEY || !DB_URL) return st.REASONJOB || null;
+  st.REASONJOB = (async () => {
+    await ensureReasonCols();
+    st.TIPS_AT = 0;
+    const stored = await storedTips(), now = Date.now();
+    const todo = [...stored.values()].filter((r) => !r.settled_at && Date.parse(r.kickoff) > now && (!r.reason || r.reason_key !== reasonKey(r)))
+      .sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff)).slice(0, 6);
+    if (!todo.length) return;
+    analysisLog = analysisLog.filter((x) => now - x < HOUR);
+    if (analysisLog.length >= 18) return;
+    analysisLog.push(now);
+    const season = await tmSeason(), model = tipModel(season), { mv } = tipData(season);
+    const P = CS().GAMES.running ? null : (() => { try { return leagueProfiles(season); } catch { return null; } })();
+    const table = new Map(standingsUpTo(season, 999).map((e) => [e.id, e]));
+    const rel = (x) => (x == null ? null : (x >= 0 ? "+" : "") + Math.round((Math.exp(x) - 1) * 100) + "%");
+    const side = (id, name) => { const t = table.get(id), r = model.rating(id);
+      return { nazwa: name, tabela: t ? `${t.pos}. miejsce, ${t.p} pkt` : null, wartosc_kadry_top18_mln_eur: mv.get(id) ? Math.round(mv.get(id) / 1e5) / 10 : null,
+        atak_wzgledem_sredniej: rel(r?.att), obrona_wzgledem_sredniej: r ? rel(r.def) : null, ...teamFacts(season, id, P) }; };
+    const items = todo.map((r) => {
+      const h2h = season.matches.filter((m) => m.status === "finished" && m.home != null && [m.home_team.team_id, m.away_team.team_id].sort().join() === [r.home_id, r.away_id].sort().join())
+        .map((m) => `${m.home_team.name} – ${m.away_team.name} ${m.home}:${m.away}`);
+      return { id: r.match_id, mecz: `${r.home} – ${r.away}`, typ_modelu: r.pick, szanse_proc: { gospodarze: Math.round(r.p_home * 100), remis: Math.round(r.p_draw * 100), goscie: Math.round(r.p_away * 100) },
+        najbardziej_prawdopodobny_wynik: `${r.score_h}:${r.score_a}`, oczekiwane_gole: [+r.xg_home.toFixed(1), +r.xg_away.toFixed(1)],
+        gospodarze: side(r.home_id, r.home), goscie: side(r.away_id, r.away), mecze_bezposrednie_w_sezonie: h2h };
+    });
+    const system = `Jesteś analitykiem piłkarskim. Model statystyczny wytypował mecze rozgrywek: ${COMPS[comp()].name}. Krótko i rzeczowo wyjaśniasz kibicowi, DLACZEGO model daje taki typ. ` +
+      "Na mecz 2–3 zdania (najwyżej ok. 60 słów): podaj 2–3 najważniejsze powody z danych, np. formę, grę u siebie lub na wyjeździe, siłę ataku i obrony, wartość kadry, styl gry, mecze bezpośrednie. " +
+      "Gdy typ ma mniej niż 45% szans, powiedz wprost, że wyraźnego faworyta nie ma. Nie zmieniaj typu modelu i nie przeczysz mu. " +
+      "Opierasz się WYŁĄCZNIE na dostarczonych danych: nie wymyślasz kontuzji, składów, transferów ani historii spoza danych. Litera W w formie to wygrana, R remis, P porażka. " +
+      "Nie zachęcasz do zakładów, nie podajesz kursów ani stawek. Piszesz po polsku, językiem kibica, bez żargonu statystycznego. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
+    const user = `Mecze:\n${JSON.stringify(items)}\n\nZwróć JSON: {"uzasadnienia":[{"id":"id meczu","tekst":"2-3 zdania"}]}`;
+    const out = parseJson(await nvidia([{ role: "system", content: system }, { role: "user", content: user }]));
+    for (const u of out?.uzasadnienia || []) {
+      const r = todo.find((x) => x.match_id === String(u.id)); if (!r || !u.tekst) continue;
+      await sql(`UPDATE ai_tips SET reason = $3, reason_key = $4, reason_at = now() WHERE comp = $1 AND match_id = $2`, [comp(), r.match_id, String(u.tekst).slice(0, 700), reasonKey(r)]);
+    }
+    st.TIPS_AT = 0;
+  })().catch((e) => { st.REASON_ERR = String(e.message || e); }).finally(() => { st.REASONJOB = null; });
+  return st.REASONJOB;
+}
+async function forecastsRoute() {
+  const season = await tmSeason(), stored = await storedTips(), now = Date.now();
+  if (now - (CS().TIPSYNC || 0) > 10 * 60000) { CS().TIPSYNC = now; syncTips().catch(() => {}); }
+  const rows = [...stored.values()].filter((r) => !r.settled_at && Date.parse(r.kickoff) > now - 3 * HOUR).sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff));
+  const pending = rows.filter((r) => Date.parse(r.kickoff) > now && (!r.reason || r.reason_key !== reasonKey(r))).length;
+  if (pending) reasonsJob();
+  const next = season.matches.filter((m) => m.status === "notstarted").sort((a, b) => a.timestamp - b.timestamp)[0];
+  return { db: !!DB_URL, ai: !!NV_KEY, pending, nextMatch: next ? next.timestamp : null,
+    matches: rows.map((r) => ({ id: "tm-" + r.match_id, round: r.round, kickoff: r.kickoff, home: r.home, away: r.away, p1: r.p_home, px: r.p_draw, p2: r.p_away, pick: r.pick,
+      score: [r.score_h, r.score_a], xg: [r.xg_home, r.xg_away], started: Date.parse(r.kickoff) <= now,
+      reason: r.reason && r.reason_key === reasonKey(r) ? r.reason : null, staleReason: r.reason && r.reason_key !== reasonKey(r) ? r.reason : null })) };
+}
+
 // ---------- podsumowanie kolejki (liczby + odstępstwa od normy + tekst AI, bez prognoz) ----------
 function standingsUpTo(season, r) {
   const t = new Map();
@@ -1294,7 +1365,7 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
     ensureGames(season); info.games = CS().GAMES.map.size;
     for (const c of ["CL", "EL", "UCOL"]) await ALS.run(c, async () => { const s2 = await tmSeason(); await ensureGames(s2); info["games" + c] = CS().GAMES.map.size; }).catch(() => {});
     await ensureGames(season);
-    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { info["tips" + c] = await syncTips(); }).catch((e) => { info["tips" + c] = String(e.message || e); });
+    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { info["tips" + c] = await syncTips(); CS().TIPSYNC = Date.now(); await reasonsJob(); }).catch((e) => { info["tips" + c] = String(e.message || e); });
     for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { if (analysisLog.filter((t) => Date.now() - t < HOUR).length < 14) await recapRoute(); }).catch(() => {});
     searchIndex();
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
@@ -1396,6 +1467,7 @@ async function route(p, qs = new URLSearchParams()) {
   if (p === "/api/profiles") return { status: 200, data: await profilesRoute() };
   if ((m = p.match(/^\/api\/recap(?:\/(\d+))?$/))) return { status: 200, data: await recapRoute(m[1] ? +m[1] : undefined) };
   if (p === "/api/tips") return { status: 200, data: await tipsRoute() };
+  if (p === "/api/forecasts") return { status: 200, data: await forecastsRoute() };
   if ((m = p.match(/^\/api\/tip\/tm-(\d+)$/))) return { status: 200, data: await tipRoute(m[1]) };
   if (p === "/api/search") return { status: 200, data: searchRoute(qs.get("q") || "") };
   if (p === "/api/values") return { status: 200, data: await valuesRoute() };

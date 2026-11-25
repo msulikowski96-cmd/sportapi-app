@@ -1128,7 +1128,7 @@ function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 m
       .sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff)).slice(0, 6);
     if (!todo.length) return;
     analysisLog = analysisLog.filter((x) => now - x < HOUR);
-    if (analysisLog.length >= 18) return;
+    if (analysisLog.length >= 18) { st.REASON_ERR = "limit zapytań AI na godzinę"; return; }
     analysisLog.push(now);
     const season = await tmSeason(), model = tipModel(season), { mv } = tipData(season);
     const P = CS().GAMES.running ? null : (() => { try { return leagueProfiles(season); } catch { return null; } })();
@@ -1150,7 +1150,8 @@ function reasonsJob() { // dopisuje uzasadnienia AI do zapisanych typów (po 6 m
       "Opierasz się WYŁĄCZNIE na dostarczonych danych: nie wymyślasz kontuzji, składów, transferów ani historii spoza danych. Litera W w formie to wygrana, R remis, P porażka. " +
       "Nie zachęcasz do zakładów, nie podajesz kursów ani stawek. Piszesz po polsku, językiem kibica, bez żargonu statystycznego. Zwracasz wyłącznie jeden obiekt JSON, bez markdown.";
     const user = `Mecze:\n${JSON.stringify(items)}\n\nZwróć JSON: {"uzasadnienia":[{"id":"id meczu","tekst":"2-3 zdania"}]}`;
-    const out = parseJson(await nvidia([{ role: "system", content: system }, { role: "user", content: user }]));
+    const text = await nvidia([{ role: "system", content: system }, { role: "user", content: user }]), out = parseJson(text);
+    st.REASON_ERR = out?.uzasadnienia?.length ? null : "nieczytelna odpowiedź AI: " + String(text).slice(0, 300);
     for (const u of out?.uzasadnienia || []) {
       const r = todo.find((x) => x.match_id === String(u.id)); if (!r || !u.tekst) continue;
       await sql(`UPDATE ai_tips SET reason = $3, reason_key = $4, reason_at = now() WHERE comp = $1 AND match_id = $2`, [comp(), r.match_id, String(u.tekst).slice(0, 700), reasonKey(r)]);
@@ -1166,7 +1167,7 @@ async function forecastsRoute() {
   const pending = rows.filter((r) => Date.parse(r.kickoff) > now && (!r.reason || r.reason_key !== reasonKey(r))).length;
   if (pending) reasonsJob();
   const next = season.matches.filter((m) => m.status === "notstarted").sort((a, b) => a.timestamp - b.timestamp)[0];
-  return { db: !!DB_URL, ai: !!NV_KEY, pending, nextMatch: next ? next.timestamp : null,
+  return { db: !!DB_URL, ai: !!NV_KEY, pending, aiError: CS().REASON_ERR || null, aiRunning: !!CS().REASONJOB, nextMatch: next ? next.timestamp : null,
     matches: rows.map((r) => ({ id: "tm-" + r.match_id, round: r.round, kickoff: r.kickoff, home: r.home, away: r.away, p1: r.p_home, px: r.p_draw, p2: r.p_away, pick: r.pick,
       score: [r.score_h, r.score_a], xg: [r.xg_home, r.xg_away], started: Date.parse(r.kickoff) <= now,
       reason: r.reason && r.reason_key === reasonKey(r) ? r.reason : null, staleReason: r.reason && r.reason_key !== reasonKey(r) ? r.reason : null })) };

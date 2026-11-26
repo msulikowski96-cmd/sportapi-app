@@ -516,9 +516,14 @@ async function showTips() {
 async function showForecasts(silent) {
   if (!silent) loading("Ładuję prognozy…");
   try {
-    const d = await api("/api/forecasts");
+    const [d, ts] = await Promise.all([api("/api/forecasts"), api("/api/tips").catch(() => null)]);
     if (view !== "fc") return;
-    let h = `<h2 style="margin:6px 0 4px">Prognozy</h2><p class="mini" style="margin:0 0 14px">Typ modelu na każdy mecz najbliższego tygodnia i krótkie uzasadnienie, dlaczego taki. Skuteczność typów znajdziesz w zakładce Tabela → Typy AI.</p>`;
+    let h = `<h2 style="margin:6px 0 4px">Prognozy</h2><p class="mini" style="margin:0 0 14px">Typ modelu na każdy mecz najbliższego tygodnia i krótkie uzasadnienie, dlaczego taki.</p>`;
+    if (ts && ts.backtest) {
+      const L = ts.live, B = ts.backtest, live = L && L.n > 0, S = live ? L : B;
+      const acc = live ? L.hit / L.n : B.acc, ex = live ? L.exact / L.n : B.exact, base = live ? L.baseHome : B.baseHome;
+      h += `<div class="card"><h3 style="margin-top:0">Skuteczność typów</h3><div class="kpis" style="grid-template-columns:repeat(3,1fr)"><div class="kpi"><b>${pct(acc)}</b><span>trafionych (${S.hit} z ${S.n})</span></div><div class="kpi"><b>${pct(ex)}</b><span>dokładny wynik</span></div>${base != null ? `<div class="kpi"><b>${pct(base)}</b><span>„zawsze gospodarz”</span></div>` : ""}</div><p class="mini" style="margin:10px 0 0">${live ? `Typy zapisane przed meczami, rozliczone po ich zakończeniu.` : `Typy na żywo jeszcze się rozliczają, więc to test wsteczny tego sezonu.`} <a href="#" id="fcst" style="color:var(--acc)">Pełne statystyki ›</a></p></div>`;
+    }
     if (!d.db) h += `<div class="card"><p class="mut" style="margin:0">Prognozy są wyłączone (brak bazy danych).</p></div>`;
     else if (!d.matches.length) h += `<div class="card"><p class="mut" style="margin:0">W najbliższym tygodniu nie ma meczów ${COMPS[COMP].gen}.${d.nextMatch ? ` Następny mecz: ${esc(fmtDay(d.nextMatch))}. Prognozy pojawią się tydzień przed nim.` : ""}</p></div>`;
     else {
@@ -537,6 +542,7 @@ async function showForecasts(silent) {
     }
     h += `<p class="mini">Typ wylicza model statystyczny z wyników tego sezonu i wartości kadr. Uzasadnienia pisze AI na podstawie tych samych danych, więc może się pomylić w szczegółach. Nie zna składów ani kontuzji. To prognoza, nie porada do zakładów.</p>`;
     app.innerHTML = h;
+    const st = document.getElementById("fcst"); if (st) st.onclick = (e) => { e.preventDefault(); tabMode = "tips"; go("table"); };
     document.querySelectorAll(".fcard[data-id]").forEach((el) => el.onclick = () => openMatch(el.dataset.id));
     clearTimeout(timer);
     if (d.pending && d.ai) timer = setTimeout(() => { if (view === "fc" && !document.hidden) showForecasts(true); }, 10000);

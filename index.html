@@ -129,7 +129,7 @@
   .hello { padding:6px 2px 2px; color:var(--mut); font-size:14px; }
   .fcard { cursor:pointer; } .fcard:hover { border-color:rgba(238,243,234,.45); }
   .fct { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:10px; align-items:center; margin-top:8px; }
-  .fct .ft { display:flex; align-items:center; gap:8px; min-width:0; } .fct .ft b { font-size:15px; font-weight:700; line-height:1.2; overflow-wrap:anywhere; } .fct .ft.r { justify-content:flex-end; text-align:right; }
+  .fct .ft { display:flex; align-items:center; gap:6px; min-width:0; } .fct .ft b { font-size:13.5px; font-weight:700; line-height:1.2; overflow-wrap:break-word; hyphens:manual; } .fct .ft.r { justify-content:flex-end; text-align:right; }
   .fct .pk { display:flex; flex-direction:column; align-items:center; min-width:52px; } .fct .pk b { font-size:38px; font-weight:900; font-stretch:68%; line-height:1; color:var(--acc); } .fct .pk span { font-size:11.5px; color:var(--mut); }
   .why { font-size:14px; line-height:1.55; margin:12px 0 0; } .fcard .lnk { font-size:12.5px; color:var(--acc); font-weight:600; margin-top:10px; }
   .dots::after { content:"…"; animation:pulse 1.4s infinite; }
@@ -512,7 +512,44 @@ async function showTips() {
   } catch (e) { app.innerHTML = pills() + `<p class="err">${esc(e.message)}</p>`; bindPills(); }
 }
 
+
+// ---------- powiadomienia push ----------
+const pushOk = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+async function pushPost(path, body) {
+  const r = await fetch(API_BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "Błąd " + r.status); return j;
+}
+async function pushSub() { if (!pushOk()) return null; const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
+async function pushEnable() {
+  if (await Notification.requestPermission() !== "granted") throw new Error("Powiadomienia są zablokowane w ustawieniach przeglądarki.");
+  const reg = await navigator.serviceWorker.ready, { key } = await (await fetch(API_BASE + "/api/push/key")).json();
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)) });
+  return pushPost("/api/push/test", { subscription: sub.toJSON() });
+}
+async function pushDisable() { const sub = await pushSub(); if (sub) { await pushPost("/api/push/unsubscribe", { subscription: sub.toJSON() }).catch(() => {}); await sub.unsubscribe(); } }
+async function pushCard() {
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent), standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  let inner;
+  if (!pushOk()) inner = `<p class="mini" style="margin:0">${ios && !standalone ? "Na iPhonie dodaj aplikację do ekranu początkowego (Udostępnij → Do ekranu początkowego), potem włączysz tu powiadomienia." : "Ta przeglądarka nie obsługuje powiadomień."}</p>`;
+  else if (Notification.permission === "denied") inner = `<p class="mini" style="margin:0">Powiadomienia są zablokowane w ustawieniach przeglądarki dla tej strony.</p>`;
+  else {
+    const on = !!(await pushSub().catch(() => null)) && Notification.permission === "granted";
+    inner = `<p class="mini" style="margin:0 0 10px">Typ AI godzinę przed meczem i podsumowanie po rozliczeniu, na telefon, nawet gdy aplikacja jest zamknięta.</p><button class="btn ${on ? "" : "pri"}" id="pushbtn">${on ? "Wyłącz powiadomienia" : "Włącz powiadomienia"}</button> <span class="mini" id="pushmsg"></span>`;
+  }
+  return `<div class="card"><h3 style="margin-top:0">Powiadomienia o typach</h3>${inner}</div>`;
+}
+function pushBind(rerender) {
+  const b = document.getElementById("pushbtn"); if (!b) return;
+  b.onclick = async () => {
+    b.disabled = true; const m = document.getElementById("pushmsg");
+    try { if (b.textContent.startsWith("Wyłącz")) await pushDisable(); else { const r = await pushEnable(); if (m && !r.ok) m.textContent = "Zapisano, ale testowe powiadomienie nie dotarło."; } rerender(); }
+    catch (e) { b.disabled = false; if (m) m.textContent = e.message; }
+  };
+}
+
 // ---------- prognozy ----------
+let fcFilter = "all";
 async function showForecasts(silent) {
   if (!silent) loading("Ładuję prognozy…");
   try {
@@ -527,21 +564,32 @@ async function showForecasts(silent) {
     if (!d.db) h += `<div class="card"><p class="mut" style="margin:0">Prognozy są wyłączone (brak bazy danych).</p></div>`;
     else if (!d.matches.length) h += `<div class="card"><p class="mut" style="margin:0">W najbliższym tygodniu nie ma meczów ${COMPS[COMP].gen}.${d.nextMatch ? ` Następny mecz: ${esc(fmtDay(d.nextMatch))}. Prognozy pojawią się tydzień przed nim.` : ""}</p></div>`;
     else {
+      const conf = (m) => Math.max(m.p1, m.px, m.p2);
+      h += `<div class="tabs2" id="fcf" style="margin:0 0 12px"><button data-f="all" class="${fcFilter === "all" ? "on" : ""}">Wszystkie (${d.matches.length})</button><button data-f="top" class="${fcFilter === "top" ? "on" : ""}">Najpewniejsze</button></div>`;
+      let list = d.matches;
+      if (fcFilter === "top") {
+        list = [...d.matches].sort((a, b) => conf(b) - conf(a));
+        const strong = list.filter((m) => conf(m) >= 0.55); list = (strong.length ? strong : list).slice(0, 6);
+        h += `<p class="mini" style="margin:-4px 0 10px">Mecze, w których model ma największą przewagę wybranego wyniku (od najwyższego prawdopodobieństwa).</p>`;
+      }
       let day = "";
-      for (const m of d.matches) {
+      for (const m of list) {
         const ts = Date.parse(m.kickoff) / 1000, dd = fmtDay(ts);
-        if (dd !== day) { day = dd; h += `<div class="day">${esc(dd)}</div>`; }
+        if (fcFilter === "all" && dd !== day) { day = dd; h += `<div class="day">${esc(dd)}</div>`; }
         const why = m.reason ? `<p class="why">${esc(m.reason)}</p>`
           : m.staleReason ? `<p class="why">${esc(m.staleReason)}</p><p class="mini" style="margin:4px 0 0">Typ się zmienił, AI poprawia uzasadnienie…</p>`
           : d.ai ? `<p class="why mut">AI pisze uzasadnienie… <span class="dots"></span></p>` : "";
         h += `<div class="card fcard" data-id="${m.id}">
-          <div class="mini">${fmtTime(ts)}${m.started ? " · mecz już się rozpoczął" : ""}</div>
+          <div class="mini">${fcFilter === "top" ? esc(dd) + ", " : ""}${fmtTime(ts)}${m.started ? " · mecz już się rozpoczął" : ""}</div>
           <div class="fct"><div class="ft">${badge(m.home, 30)}<b>${esc(m.home)}</b></div><div class="pk"><span>typ</span><b>${m.pick}</b><span>${m.score.join(":")}</span></div><div class="ft r"><b>${esc(m.away)}</b>${badge(m.away, 30)}</div></div>
           ${probBar(m, m.home, m.away)}${why}<div class="lnk">Szczegóły meczu ›</div></div>`;
       }
     }
+    h += await pushCard();
     h += `<p class="mini">Typ wylicza model statystyczny z wyników tego sezonu i wartości kadr. Uzasadnienia pisze AI na podstawie tych samych danych, więc może się pomylić w szczegółach. Nie zna składów ani kontuzji. To prognoza, nie porada do zakładów.</p>`;
     app.innerHTML = h;
+    pushBind(() => showForecasts(true));
+    document.querySelectorAll("#fcf button").forEach((b) => b.onclick = () => { fcFilter = b.dataset.f; showForecasts(true); });
     const st = document.getElementById("fcst"); if (st) st.onclick = (e) => { e.preventDefault(); tabMode = "tips"; go("table"); };
     document.querySelectorAll(".fcard[data-id]").forEach((el) => el.onclick = () => openMatch(el.dataset.id));
     clearTimeout(timer);
@@ -689,6 +737,10 @@ async function openTeam(id) {
         return `<div class="mr"><div class="mt"><span>${esc(df.label)}</span><b>${fmtV(df.fmt, v)}</b></div><div class="mbar ${cls}"><i style="width:${Math.max(4, pc ?? 0)}%"></i></div><div class="ml"><span>${rk}. w lidze</span><span>średnia ligi ${fmtV(df.fmt, df.avg)}</span></div></div>`; }).join("") + `</div>`;
       h += `<p class="mini">Wszystkie wartości to średnie z rozegranych meczów sezonu (${p.withData} z ${p.matches} meczów ze szczegółowymi danymi). Pasek pokazuje pozycję na tle ligi.</p>`;
     }
+    if (d.tips) { const T = d.tips, pc1 = (x) => (x == null ? "–" : pct(x));
+      h += `<div class="card"><h3 style="margin-top:0">Jak model typuje tę drużynę</h3><div class="kpis" style="grid-template-columns:repeat(3,1fr)"><div class="kpi"><b>${pct(T.acc)}</b><span>trafionych (${T.hit} z ${T.n})</span></div><div class="kpi"><b>${pc1(T.favAcc)}</b><span>gdy stawia na nią (${T.favN})</span></div><div class="kpi"><b>${pc1(T.undAcc)}</b><span>gdy stawia przeciw (${T.undN})</span></div></div>
+        <h3>Ostatnie typy (od najnowszego)</h3><div class="chips">${T.recent.map((m) => `<div class="chip ${m.ok ? "Z" : "P"}" title="${esc(m.home)} ${m.res[0]}:${m.res[1]} ${esc(m.away)}, typ ${m.pick} (${m.score[0]}:${m.score[1]})">${m.ok ? "✓" : "✗"}</div>`).join("")}</div>
+        <p class="mini" style="margin:8px 0 0">Test wsteczny: model typuje każdą kolejkę znając tylko wcześniejsze mecze. Pokazuje, czy ta drużyna jest dla modelu przewidywalna. Ostatnie typy: ✓ trafiony, ✗ chybiony.</p></div>`; }
     if (d.unavailable.length) h += `<div class="card"><h3 style="margin-top:0">Niedostępni</h3>` + d.unavailable.map((u) => `<div style="padding:3px 0"><span class="tag ${u.type === "zawieszenie" ? "sus" : "inj"}">${u.type}</span>${esc(u.name)} <span class="mini">– ${esc(u.reason)}${u.until ? ", do " + esc(u.until) : ", brak daty powrotu"}</span></div>`).join("") + `</div>`;
     if (d.scorers.length) h += `<div class="card"><h3 style="margin-top:0">Najlepsi strzelcy w lidze</h3>` + d.scorers.map((s) => `<div class="pl" style="grid-template-columns:1fr auto"><div>${esc(s.name)}</div><div class="v">${s.goals} goli · ${s.assists} asyst</div></div>`).join("") + `</div>`;
     const nAi = d.squad.filter((x) => x.ai).length;
@@ -748,7 +800,10 @@ document.querySelectorAll("#cs button").forEach((b) => b.onclick = () => { if (b
 setComp(COMP, false);
 $("#sbtn").onclick = openSearch;
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-loadCrests().finally(() => go("live"));
+loadCrests().finally(() => {
+  const v = new URLSearchParams(location.search).get("v");
+  if (v === "tips") { tabMode = "tips"; go("table"); } else go(v === "fc" ? "fc" : "live");
+});
 </script>
 </body>
 </html>

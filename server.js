@@ -4,6 +4,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { AsyncLocalStorage } = require("async_hooks");
+const crypto = require("crypto");
 // rozgrywki: kod Transfermarkt -> nazwy; bieżące rozgrywki trzymane w kontekście zapytania (?c=PL1|CL)
 const COMPS = { PL1: { name: "Ekstraklasa", gen: "Ekstraklasy", country: "Polska" }, CL: { name: "Liga Mistrzów", gen: "Ligi Mistrzów", country: "Europa" },
   EL: { name: "Liga Europy", gen: "Ligi Europy", country: "Europa" }, UCOL: { name: "Liga Konferencji", gen: "Ligi Konferencji", country: "Europa" } };
@@ -630,7 +631,8 @@ async function teamPage(clubId) {
   const info = await tmTeam(clubId, season);
   const profile = CS().GAMES.running ? null : leagueProfiles(season).teams.find((t) => t.id === P + clubId) || null;
   return { profile, profileProgress: { done: CS().GAMES.done, total: CS().GAMES.total }, team: { id: P + clubId, name: row.team.name }, table: row, form: fsFormOf(mine, clubId, 6), next, h2h, stats: fsStats(mine, clubId),
-    stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, fmv: fmvMeta(), note: seasonNote(season) };
+    stadium: info.stadium, coach: info.coach, squad: info.squad, squadValue: info.squadValue, unavailable: info.unavailable, scorers: info.scorers, fmv: fmvMeta(), note: seasonNote(season),
+    tips: (() => { try { return teamTips(season, clubId); } catch { return null; } })() };
 }
 
 // ---------- analiza AI na danych z Flashscore (wszystko z danych sezonu – 0 dodatkowych zapytań) ----------
@@ -998,7 +1000,7 @@ function tipBacktest(season) { // test wsteczny: każdą kolejkę typuje model z
   const byRound = new Map();
   for (const m of season.matches) { const r = roundNo(m.round); if (!r || m.status !== "finished" || m.home == null) continue; (byRound.get(r) || byRound.set(r, []).get(r)).push(m); }
   let n = 0, hit = 0, exact = 0, brier = 0, home = 0, fav = 0, draws = 0;
-  const rounds = [];
+  const rounds = [], teams = new Map();
   for (const r of [...byRound.keys()].sort((a, b) => a - b)) {
     const ms = byRound.get(r), start = Math.min(...ms.map((m) => m.timestamp));
     const model = fitTips(done.filter((d) => d.t < start - 3600), mv, start);
@@ -1006,6 +1008,12 @@ function tipBacktest(season) { // test wsteczny: każdą kolejkę typuje model z
     for (const m of ms) {
       const p = model.P(m.home_team.team_id, m.away_team.team_id), o = outcome(m.home, m.away);
       n++; rn++; if (p.pick === o) { hit++; rh++; } if (p.score[0] === m.home && p.score[1] === m.away) exact++;
+      for (const [side, tm] of [["1", m.home_team], ["2", m.away_team]]) { // statystyka trafności per drużyna
+        const t = teams.get(tm.team_id) || teams.set(tm.team_id, { n: 0, hit: 0, exact: 0, favN: 0, favHit: 0, undN: 0, undHit: 0, list: [] }).get(tm.team_id);
+        const ok = p.pick === o; t.n++; if (ok) t.hit++; if (p.score[0] === m.home && p.score[1] === m.away) t.exact++;
+        if (p.pick === side) { t.favN++; if (ok) t.favHit++; } else if (p.pick !== "X") { t.undN++; if (ok) t.undHit++; }
+        t.list.push({ id: m.match_id, round: r, home: m.home_team.name, away: m.away_team.name, pick: p.pick, score: p.score, res: [m.home, m.away], ok });
+      }
       brier += (p.p1 - (o === "1")) ** 2 + (p.px - (o === "X")) ** 2 + (p.p2 - (o === "2")) ** 2;
       if (o === "1") home++; if (o === "X") draws++;
       const mh = mv.get(m.home_team.team_id) || 0, ma = mv.get(m.away_team.team_id) || 0;
@@ -1015,8 +1023,16 @@ function tipBacktest(season) { // test wsteczny: każdą kolejkę typuje model z
   }
   const v = { n, hit, acc: n ? hit / n : null, exact: n ? exact / n : null, brier: n ? brier / n : null,
     baseHome: n ? home / n : null, baseValue: n ? fav / n : null, drawShare: n ? draws / n : null, rounds };
-  st.TIPB = { key, v };
+  st.TIPB = { key, v, teams };
   return v;
+}
+function teamTips(season, clubId) { // jak model trafiał mecze tej drużyny (test wsteczny sezonu)
+  tipBacktest(season);
+  const t = CS().TIPB?.teams.get(clubId);
+  if (!t || !t.n) return null;
+  const pc = (a, b) => (b ? a / b : null);
+  return { n: t.n, hit: t.hit, acc: t.hit / t.n, exact: t.exact, favN: t.favN, favAcc: pc(t.favHit, t.favN), undN: t.undN, undAcc: pc(t.undHit, t.undN),
+    recent: t.list.slice(-8).reverse() };
 }
 // --- baza: typ zapisany przed meczem (aktualizowany najpóźniej 1 h przed startem), potem rozliczany ---
 const DB_URL = process.env.DATABASE_URL;
@@ -1354,6 +1370,101 @@ async function watchLive(season) {
   return msgs.length;
 }
 
+
+// ---------- powiadomienia push (Web Push: VAPID + szyfrowanie aes128gcm, bez zewnętrznych bibliotek) ----------
+const PUSH_HOSTS = /(^|\.)(googleapis\.com|push\.services\.mozilla\.com|push\.apple\.com|notify\.windows\.com)$/;
+const safeHost = (u) => { try { const x = new URL(u); return x.protocol === "https:" ? x.hostname : ""; } catch { return ""; } };
+const b64u = (b) => Buffer.from(b).toString("base64url"), unb64u = (s) => Buffer.from(s, "base64url");
+let pushReady = null, VAPID = null;
+const ensurePush = () => (pushReady ||= (async () => {
+  await sql(`CREATE TABLE IF NOT EXISTS app_kv (k text PRIMARY KEY, v text NOT NULL)`);
+  await sql(`CREATE TABLE IF NOT EXISTS push_subs (endpoint text PRIMARY KEY, p256dh text NOT NULL, auth text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), fails int NOT NULL DEFAULT 0)`);
+  await ensureTipsSchema();
+  await sql(`ALTER TABLE ai_tips ADD COLUMN IF NOT EXISTS pushed_pre boolean NOT NULL DEFAULT false, ADD COLUMN IF NOT EXISTS pushed_res boolean NOT NULL DEFAULT false`);
+  const r = await sql(`SELECT v FROM app_kv WHERE k = 'vapid'`);
+  if (r[0]) VAPID = JSON.parse(r[0].v);
+  else {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const j = publicKey.export({ format: "jwk" });
+    VAPID = { pub: b64u(Buffer.concat([Buffer.from([4]), unb64u(j.x), unb64u(j.y)])), priv: privateKey.export({ format: "jwk" }) };
+    await sql(`INSERT INTO app_kv (k, v) VALUES ('vapid', $1) ON CONFLICT (k) DO NOTHING`, [JSON.stringify(VAPID)]);
+    const r2 = await sql(`SELECT v FROM app_kv WHERE k = 'vapid'`); VAPID = JSON.parse(r2[0].v); // przy wyścigu wygrywa pierwszy zapis
+  }
+})().catch((e) => { pushReady = null; throw e; }));
+function vapidJwt(aud) {
+  const head = b64u(JSON.stringify({ typ: "JWT", alg: "ES256" })), body = b64u(JSON.stringify({ aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: "mailto:admin@sportapi-app.onrender.com" }));
+  const sig = crypto.sign("sha256", Buffer.from(head + "." + body), { key: crypto.createPrivateKey({ key: VAPID.priv, format: "jwk" }), dsaEncoding: "ieee-p1363" });
+  return `${head}.${body}.${b64u(sig)}`;
+}
+function encryptPush(payload, p256dh, auth) { // RFC 8291 (aes128gcm)
+  const uaPub = unb64u(p256dh), authSecret = unb64u(auth), ecdh = crypto.createECDH("prime256v1"), asPub = ecdh.generateKeys();
+  const secret = ecdh.computeSecret(uaPub), salt = crypto.randomBytes(16);
+  const ikm = Buffer.from(crypto.hkdfSync("sha256", secret, authSecret, Buffer.concat([Buffer.from("WebPush: info\0"), uaPub, asPub]), 32));
+  const cek = Buffer.from(crypto.hkdfSync("sha256", ikm, salt, Buffer.from("Content-Encoding: aes128gcm\0"), 16));
+  const nonce = Buffer.from(crypto.hkdfSync("sha256", ikm, salt, Buffer.from("Content-Encoding: nonce\0"), 12));
+  const c = crypto.createCipheriv("aes-128-gcm", cek, nonce), ct = Buffer.concat([c.update(Buffer.concat([Buffer.from(payload), Buffer.from([2])])), c.final(), c.getAuthTag()]);
+  const rs = Buffer.alloc(4); rs.writeUInt32BE(4096);
+  return Buffer.concat([salt, rs, Buffer.from([asPub.length]), asPub, ct]);
+}
+async function pushTo(sub, msg) {
+  const aud = new URL(sub.endpoint).origin;
+  const r = await fetch(sub.endpoint, { method: "POST", signal: AbortSignal.timeout(15000),
+    headers: { Authorization: `vapid t=${vapidJwt(aud)}, k=${VAPID.pub}`, "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream", TTL: "7200", Urgency: "normal" },
+    body: encryptPush(JSON.stringify(msg), sub.p256dh, sub.auth) });
+  return r.status;
+}
+async function pushAll(msg) { // wysyła do wszystkich subskrybentów, usuwa wygasłe (404/410)
+  if (!DB_URL) return 0;
+  await ensurePush();
+  const subs = await sql(`SELECT endpoint, p256dh, auth FROM push_subs`);
+  let ok = 0;
+  for (const s of subs) {
+    try {
+      const st = await pushTo(s, msg);
+      if (st === 404 || st === 410) await sql(`DELETE FROM push_subs WHERE endpoint = $1`, [s.endpoint]);
+      else if (st >= 200 && st < 300) { ok++; await sql(`UPDATE push_subs SET fails = 0 WHERE endpoint = $1`, [s.endpoint]); }
+      else await sql(`UPDATE push_subs SET fails = fails + 1 WHERE endpoint = $1`, [s.endpoint]);
+    } catch { await sql(`UPDATE push_subs SET fails = fails + 1 WHERE endpoint = $1`, [s.endpoint]).catch(() => {}); }
+  }
+  await sql(`DELETE FROM push_subs WHERE fails >= 5`).catch(() => {});
+  return ok;
+}
+const tipLabel = (t) => `${t.home} – ${t.away}: typ ${t.pick === "1" ? "gospodarz" : t.pick === "2" ? "gość" : "remis"} ${t.score_h}:${t.score_a} (${Math.round(Math.max(t.p_home, t.p_draw, t.p_away) * 100)}%)`;
+async function pushJob() { // typy godzinę przed meczem i rozliczenia po meczach (bieżące rozgrywki)
+  if (!DB_URL) return {};
+  await ensurePush();
+  const c = comp(), out = { pre: 0, res: 0 };
+  const nSubs = Number((await sql(`SELECT count(*)::int AS n FROM push_subs`))[0]?.n || 0);
+  if (!nSubs) return out;
+  const pre = await sql(`SELECT match_id, home, away, pick, score_h, score_a, p_home, p_draw, p_away FROM ai_tips WHERE comp = $1 AND NOT pushed_pre AND settled_at IS NULL AND kickoff > now() AND kickoff < now() + interval '90 minutes' ORDER BY kickoff`, [c]);
+  if (pre.length) {
+    const body = pre.slice(0, 5).map(tipLabel).join("\n") + (pre.length > 5 ? `\n…i ${pre.length - 5} więcej` : "");
+    await pushAll({ title: pre.length === 1 ? `Typ AI · ${COMPS[c].name}` : `Typy AI · ${COMPS[c].name} (${pre.length})`, body, url: `?v=fc&c=${c}`, tag: "pre-" + c });
+    await sql(`UPDATE ai_tips SET pushed_pre = true WHERE comp = $1 AND match_id = ANY($2)`, [c, pre.map((t) => t.match_id)]); out.pre = pre.length;
+  }
+  const res = await sql(`SELECT match_id, home, away, pick, score_h, score_a, res_h, res_a, correct FROM ai_tips WHERE comp = $1 AND NOT pushed_res AND settled_at IS NOT NULL AND settled_at > now() - interval '12 hours' ORDER BY kickoff`, [c]);
+  if (res.length) {
+    const hit = res.filter((t) => t.correct).length;
+    const body = res.slice(0, 5).map((t) => `${t.correct ? "✓" : "✗"} ${t.home} ${t.res_h}:${t.res_a} ${t.away} (typ ${t.pick} ${t.score_h}:${t.score_a})`).join("\n") + (res.length > 5 ? `\n…i ${res.length - 5} więcej` : "");
+    await pushAll({ title: `Rozliczone typy · ${COMPS[c].name}: ${hit} z ${res.length} trafionych`, body, url: `?v=tips&c=${c}`, tag: "res-" + c });
+    await sql(`UPDATE ai_tips SET pushed_res = true WHERE comp = $1 AND match_id = ANY($2)`, [c, res.map((t) => t.match_id)]); out.res = res.length;
+  }
+  return out;
+}
+async function pushRoute(p, body) {
+  if (!DB_URL) throw new HttpErr(503, "Powiadomienia wymagają bazy danych (DATABASE_URL)");
+  await ensurePush();
+  if (p === "/api/push/key") return { key: VAPID.pub };
+  const sub = body?.subscription || body;
+  if (!sub?.endpoint || !PUSH_HOSTS.test(safeHost(sub.endpoint))) throw new HttpErr(400, "Nieobsługiwany adres powiadomień");
+  if (p === "/api/push/unsubscribe") { await sql(`DELETE FROM push_subs WHERE endpoint = $1`, [sub.endpoint]); return { ok: true }; }
+  const k = sub.keys || {};
+  if (!k.p256dh || !k.auth) throw new HttpErr(400, "Brak kluczy subskrypcji");
+  await sql(`INSERT INTO push_subs (endpoint, p256dh, auth) VALUES ($1,$2,$3) ON CONFLICT (endpoint) DO UPDATE SET p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, fails = 0`, [sub.endpoint, k.p256dh, k.auth]);
+  if (p === "/api/push/test") { const st = await pushTo({ endpoint: sub.endpoint, p256dh: k.p256dh, auth: k.auth }, { title: "Powiadomienia działają", body: "Dostaniesz typ AI godzinę przed meczem i wynik po jego rozliczeniu.", url: "?v=fc", tag: "test" }); return { ok: st >= 200 && st < 300, status: st }; }
+  return { ok: true };
+}
+
 let lastTick = 0, tickRunning = false, lastTickInfo = null;
 async function tick(force = false) { // budzi serwis, odświeża dane meczowe i pilnuje powiadomień o meczach
   if (tickRunning) return { skipped: "trwa", last: lastTickInfo };
@@ -1366,7 +1477,7 @@ async function tick(force = false) { // budzi serwis, odświeża dane meczowe i 
     ensureGames(season); info.games = CS().GAMES.map.size;
     for (const c of ["CL", "EL", "UCOL"]) await ALS.run(c, async () => { const s2 = await tmSeason(); await ensureGames(s2); info["games" + c] = CS().GAMES.map.size; }).catch(() => {});
     await ensureGames(season);
-    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { info["tips" + c] = await syncTips(); CS().TIPSYNC = Date.now(); await reasonsJob(); }).catch((e) => { info["tips" + c] = String(e.message || e); });
+    for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { info["tips" + c] = await syncTips(); CS().TIPSYNC = Date.now(); await reasonsJob(); info["push" + c] = await pushJob().catch((e) => String(e.message || e)); }).catch((e) => { info["tips" + c] = String(e.message || e); });
     for (const c of Object.keys(COMPS)) await ALS.run(c, async () => { if (analysisLog.filter((t) => Date.now() - t < HOUR).length < 14) await recapRoute(); }).catch(() => {});
     searchIndex();
   } catch (e) { info.error = String(e.message || e); } finally { tickRunning = false; lastTickInfo = info; }
@@ -1488,6 +1599,14 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://${req.headers.host}`), p = u.pathname;
   const c = COMPS[u.searchParams.get("c")] ? u.searchParams.get("c") : "PL1";
 
+  if (p.startsWith("/api/push/")) {
+    res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "Content-Type"); res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    if (req.method === "OPTIONS") { res.writeHead(204); return res.end(); }
+    try {
+      let raw = ""; if (req.method === "POST") for await (const ch of req) { raw += ch; if (raw.length > 20000) throw new HttpErr(413, "Za duże żądanie"); }
+      return send(res, 200, await ALS.run(c, () => pushRoute(p, raw ? JSON.parse(raw) : null)));
+    } catch (e) { return send(res, e.status || 400, { error: String(e.message || e) }); }
+  }
   if (p.startsWith("/api/")) {
     if (!KEY) return send(res, 500, { error: "Brak zmiennej środowiskowej RAPIDAPI_KEY" });
     try {
